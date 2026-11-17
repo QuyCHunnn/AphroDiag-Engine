@@ -9,12 +9,12 @@ asr_backend = "auto" # auto | faster-whisper | openvino (extra intel)
 # Experimental native backend: asr_backend = "genai", source_lang = "en" or "vi"
 # asr_python = ".venv-native-asr-next/bin/python" # isolated compatible GenAI runtime
 asr_beam_size = 5 # kept unchanged when falling back from GPU to CPU
-tts = "edge"
+tts = "vieneu" # default local speech; choose gemini explicitly for cloud TTS
 tts_workers = 4 # network requests; VieNeu is limited to one worker
 tts_blas_threads = 2 # VieNeu CPU BLAS threads; 0 keeps the native default
 tts_cpu_threads = 0 # VieNeu ONNX threads; 0 uses the SDK hardware default
 # Omit voice when changing engines to use that engine's preset.
-voice = "vi-VN-HoaiMyNeural"
+# voice = "Hải Đăng" # VieNeu preset; omit to use the selected backend default
 rate = "+0%"
 pitch = "+0Hz"
 mix = "dub-only" # dub-only | voiceover | replace

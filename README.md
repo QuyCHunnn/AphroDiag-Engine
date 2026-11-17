@@ -24,26 +24,26 @@ Yêu cầu **Python 3.11–3.13**, **FFmpeg** và [uv](https://docs.astral.sh/uv
 # Ubuntu / Debian
 sudo apt install ffmpeg
 
-git clone https://github.com/tecix/jellydub-engine.git
-cd jellydub-engine
-uv sync
-uv run jellydub doctor
+git clone --branch enhance/pipeline-performance https://github.com/QuyCHunnn/AphroDiag-Engine.git
+cd AphroDiag-Engine
+uv sync --extra vieneu
+uv run --no-sync jellydub doctor
 
 # Tạo thuyết minh từ phụ đề tiếng Việt
-uv run jellydub dub movie.mkv --srt movie.vi.srt \
+uv run --no-sync jellydub dub movie.mkv --srt movie.vi.srt \
   --source-lang vi --out-dir ./dubbed
 ```
 
-Mặc định dùng giọng `vi-VN-HoaiMyNeural` qua Edge-TTS, cần internet để tạo đoạn đọc chưa có trong cache. Có thể đổi sang `--voice vi-VN-NamMinhNeural`.
+Mặc định dùng **VieNeu cục bộ**, giọng `Hải Đăng`; cài extra `vieneu`. Model cần tải ở lần đầu, sau đó có thể tạo giọng offline. **Gemini chỉ chạy khi chọn `--tts gemini` hoặc profile Gemini**; engine không tự chuyển backend khi hết quota.
 
 ### Dịch phụ đề tiếng Anh
 
 ```bash
-uv sync --extra translate
-uv run jellydub translate movie.mkv --srt movie.en.srt --out-dir ./dubbed
+uv sync --extra translate --extra vieneu
+uv run --no-sync jellydub translate movie.mkv --srt movie.en.srt --out-dir ./dubbed
 
 # Kiểm tra/chỉnh bản dịch trước khi tạo giọng
-uv run jellydub dub movie.mkv --srt dubbed/movie.vi.srt --out-dir ./dubbed
+uv run --no-sync jellydub dub movie.mkv --srt dubbed/movie.vi.srt --out-dir ./dubbed
 ```
 
 OPUS-MT chạy cục bộ sau lần tải model đầu tiên. Để dùng Gemini, đặt biến môi trường `GEMINI_API_KEY` rồi thêm `--translator gemini` vào lệnh dịch. Phụ đề tiếng Việt bỏ qua bước dịch; dùng `--source-lang vi` nếu nhận diện tự động chưa đúng.
@@ -54,14 +54,14 @@ OPUS-MT chạy cục bộ sau lần tải model đầu tiên. Để dùng Gemini
 
 ```bash
 # Hạ tiếng gốc khi có lời thuyết minh
-uv run jellydub dub movie.mkv --srt movie.vi.srt --mix voiceover --out-dir ./dubbed
+uv run --no-sync jellydub dub movie.mkv --srt movie.vi.srt --mix voiceover --out-dir ./dubbed
 
 # Xuất MKV có track phụ đề bật/tắt và MP4 có phụ đề gắn cố định
-uv run jellydub dub movie.mkv --srt movie.vi.srt --mix voiceover \
+uv run --no-sync jellydub dub movie.mkv --srt movie.vi.srt --mix voiceover \
   --mkv --mp4 --out-dir ./dubbed
 
 # Tự tìm phụ đề trong máy, không tìm trên mạng
-uv run jellydub dub movie.mkv --no-download --out-dir ./dubbed
+uv run --no-sync jellydub dub movie.mkv --no-download --out-dir ./dubbed
 ```
 
 Mặc định xuất MKV và SRT tiếng Việt. Dùng `--audio` nếu cần thêm MP3 thuyết minh. `--mkv` thêm audio
@@ -81,13 +81,13 @@ Có thể tải phụ đề trực tuyến bằng extra `opensubtitles`. Xem c�
 
 ```bash
 # Cài ASR; thêm translate nếu cần dịch SRT tiếng Anh
-uv sync --extra asr --extra translate
+uv sync --extra asr --extra translate --extra vieneu
 
 # Không cần chỉ định SRT: tìm phụ đề phù hợp, hoặc tự chép lời nếu không tìm thấy
-uv run jellydub auto movie.mp4 --out-dir ./dubbed
+uv run --no-sync jellydub auto movie.mp4 --out-dir ./dubbed
 
 # Có thể cung cấp SRT tường minh
-uv run jellydub auto movie.mp4 --srt movie.en.srt --out-dir ./dubbed
+uv run --no-sync jellydub auto movie.mp4 --srt movie.en.srt --out-dir ./dubbed
 ```
 
 `auto` tự nhận diện tiếng Anh/Việt, dịch tiếng Anh, tạo thuyết minh và mặc định xuất
@@ -101,9 +101,9 @@ cáo cần được xem lại.
 ### 3. Live API cho ứng dụng phát video
 
 ```bash
-uv run jellydub serve --port 8765
+uv run --no-sync jellydub serve --port 8765
 # Dịch bằng Gemini:
-uv run jellydub serve --port 8765 --translator gemini
+uv run --no-sync jellydub serve --port 8765 --translator gemini
 ```
 
 Client gửi SRT, cập nhật vị trí phát và lấy các đoạn WAV đã tạo. Engine ưu tiên đoạn quanh vị trí đang xem và điều chỉnh khi tua.
@@ -121,7 +121,7 @@ Xem thêm [hướng dẫn live bằng tiếng Việt](docs/live-dubbing-vi.md). 
 ### 4. HLS cho Jellyfin · Thử nghiệm
 
 ```bash
-uv run jellydub stream movie.mkv --srt movie.vi.srt \
+uv run --no-sync jellydub stream movie.mkv --srt movie.vi.srt \
   --public-url http://192.168.1.10:8766 \
   --strm './library/Movie Vietnamese.strm'
 ```
@@ -130,6 +130,44 @@ Thay IP bằng địa chỉ LAN của máy chạy engine. Đặt `.strm` trong t
 
 HLS tạo segment theo yêu cầu, hỗ trợ tua và tái sử dụng cache. Hiện xuất **H.264 SDR tối đa 1080p/30fps + AAC stereo**; nguồn là file video cục bộ. Độ trễ phụ thuộc CPU, dịch và TTS; khả năng phát/tua cần kiểm tra trên thiết bị thực tế.
 
+### Chọn VieNeu hoặc Gemini TTS
+
+Sau khi cài các extra, dùng `--no-sync` để giữ nguyên môi trường đã cài.
+
+```bash
+uv sync --extra vieneu --extra translate --extra asr
+
+# Mặc định: VieNeu, không gọi API Gemini để tạo giọng
+uv run --no-sync jellydub auto movie.mp4 --mix voiceover --out-dir dubbed/vieneu
+
+# Chọn VieNeu tường minh; có thể dùng lại cache VieNeu đã có
+uv run --no-sync jellydub auto movie.mp4 --tts vieneu --voice "Hải Đăng" \
+  --out-dir dubbed/vieneu
+
+# Chỉ dùng Gemini khi có quota: nhập key kín, không lưu vào mã/config
+read -rsp 'Gemini API key: ' GEMINI_API_KEY
+export GEMINI_API_KEY
+printf '\n'
+uv run --no-sync jellydub auto movie.mp4 --config jellydub.gemini.toml
+unset GEMINI_API_KEY
+
+# Quay về VieNeu: chạy lại không kèm profile Gemini
+uv run --no-sync jellydub auto movie.mp4 --tts vieneu --out-dir dubbed/vieneu
+```
+
+Profile Gemini dùng `Charon`; VieNeu dùng tên preset riêng. Khi đổi backend, bỏ `--voice` cũ hoặc chọn giọng đúng engine. Cache audio được phân biệt theo engine và giọng. Không đổi tự động giữa chừng, nên một video không bị trộn giọng Gemini/VieNeu vì lỗi quota. Chọn `--translator gemini` là đổi **bộ dịch**, độc lập với `--tts gemini` là đổi **bộ tạo giọng**; mặc định dịch vẫn là OPUS-MT.
+
+Lệnh `serve`, `stream`, `dub` và `preview` cũng dùng VieNeu mặc định; truyền `--tts gemini` để chọn Gemini. Ví dụ nghe thử SRT tiếng Việt đã duyệt:
+
+```bash
+uv run --no-sync jellydub preview --srt movie.vi.srt --tts vieneu --out-dir preview/vieneu
+uv run --no-sync jellydub preview --srt movie.vi.srt --config jellydub.gemini.toml --out-dir preview/gemini
+```
+
+Cấu hình Gemini TTS: [hướng dẫn](docs/gemini-tts.md) và [profile mẫu](jellydub.gemini.toml). API key lấy từ biến môi trường, không lưu trong cấu hình.
+
+Kết quả tối ưu và giới hạn: [checkpoint](docs/checkpoints-2026-11-17.md), [kế hoạch và thực thi](docs/next-optimization-execution-2026-11-17.md), [review lỗi](docs/bug-review-2026-11-17.md). GenAI ASR và các thử nghiệm TTS GPU vẫn cần chọn tường minh; chưa đạt mục tiêu video 3 phút trong 40–60 giây.
+
 ## Backend và cấu hình
 
 | Thành phần | Lựa chọn | Ghi chú |
@@ -137,17 +175,18 @@ HLS tạo segment theo yêu cầu, hỗ trợ tua và tái sử dụng cache. Hi
 | Dịch | `opus-mt` — mặc định | Cục bộ; cài extra `translate` |
 | Dịch | `gemini` | API trực tuyến; cần API key và quota |
 | Dịch | `agy`, `agy-stream` | Thử nghiệm; cần Antigravity CLI đã đăng nhập |
-| Giọng đọc | `edge` — mặc định | Trực tuyến; client không chính thức, không clone giọng |
-| Giọng đọc | `vieneu` | Cục bộ; cài extra `vieneu`, hỗ trợ giọng tham chiếu |
+| Giọng đọc | `vieneu` — mặc định | Cục bộ; cài extra `vieneu`, hỗ trợ giọng tham chiếu |
+| Giọng đọc | `gemini` — chọn riêng | API; cần key/quota, giọng mặc định Charon |
+| Giọng đọc | `edge` — chọn riêng | Trực tuyến; client không chính thức, không clone giọng |
 
 ```bash
 # Cài các thành phần tùy chọn cần dùng
 uv sync --extra translate --extra vieneu --extra separate
 
 # Xem toàn bộ tùy chọn
-uv run jellydub --help
-uv run jellydub dub --help
-uv run jellydub stream --help
+uv run --no-sync jellydub --help
+uv run --no-sync jellydub dub --help
+uv run --no-sync jellydub stream --help
 ```
 
 Các lệnh hỗ trợ `--config jellydub.example.toml`; tham số CLI được ưu tiên. Giữ API key trong biến môi trường. Cache mặc định nằm tại `~/.cache/jellydub`.
@@ -180,9 +219,3 @@ Mã nguồn nằm trong `src/jellydub`; `pipeline.py` điều phối xử lý fi
 Test mặc định bỏ qua nhóm `e2e` và `slow` cần mạng/model. Không commit thông tin đăng nhập, phim, model hay cache.
 
 **Giấy phép:** mã nguồn công bố theo MIT; thư viện, model và dịch vụ có điều khoản riêng. Xem [ghi chú giấy phép bên thứ ba](LICENSES-THIRD-PARTY.md).
-
-### Gemini TTS và đo hiệu năng
-
-Cấu hình Gemini TTS: [hướng dẫn](docs/gemini-tts.md) và [profile mẫu](jellydub.gemini.toml). API key lấy từ biến môi trường, không lưu trong cấu hình.
-
-Kết quả tối ưu và giới hạn: [checkpoint](docs/checkpoints-2026-11-17.md), [kế hoạch và thực thi](docs/next-optimization-execution-2026-11-17.md), [review lỗi](docs/bug-review-2026-11-17.md). GenAI ASR và các thử nghiệm TTS GPU vẫn cần chọn tường minh; chưa đạt mục tiêu video 3 phút trong 40–60 giây.

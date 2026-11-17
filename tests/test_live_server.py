@@ -118,7 +118,7 @@ def create(server, srt=None, **extra):
 def test_health(live):
     server = live()
     status, body, _ = call(server, "GET", "/v1/health")
-    assert (status, body) == (200, {"ok": True, "version": "1", "translator": "opus-mt", "tts": "edge"})
+    assert (status, body) == (200, {"ok": True, "version": "1", "translator": "opus-mt", "tts": "vieneu"})
 
 
 def test_create_session_detects_language_and_cues(live):

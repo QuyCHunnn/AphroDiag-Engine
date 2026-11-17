@@ -1,6 +1,6 @@
 # Gemini TTS
 
-Use the cloud Gemini TTS provider instead of local VieNeu:
+VieNeu is the default TTS provider. Select cloud Gemini explicitly instead of local VieNeu:
 
 ```bash
 read -rsp 'Gemini API key: ' GEMINI_API_KEY
@@ -39,3 +39,5 @@ Reproduce a small live request without saving the key:
 Official API reference: https://aistudio.google.com/docs/speech-generation
 
 Validation: the full suite passed **516 tests**, with 5 network/model tests deselected by the repository's existing marker policy. After adding two integration checks, all **18 Gemini tests** passed separately, including common-pipeline 48 kHz normalization, cache reuse without credentials, and Retry-After handling. `git diff --check` and CLI `auto --help` passed. Human listening and whole-video latency are still pending.
+
+To return to the default local engine, omit the Gemini profile and run `.venv/bin/jellydub auto video.mp4 --tts vieneu`. No automatic Gemini/VieNeu fallback is enabled; backend selection remains explicit for consistent voices.

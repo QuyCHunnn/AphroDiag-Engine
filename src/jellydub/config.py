@@ -19,7 +19,7 @@ class Config:
     asr_python: str | None = None
     pipeline_mode: str = "sequential"
     asr_beam_size: int = 5
-    tts: str = "edge"
+    tts: str = "vieneu"
     tts_model: str | None = None
     tts_style: str = ""
     tts_workers: int = 4

@@ -17,7 +17,7 @@ def main():
     missing = [name for name in ('ffmpeg','ffprobe') if shutil.which(name) is None]
     if missing:
         raise SystemExit('Missing '+', '.join(missing)+'. Ubuntu/WSL: sudo apt install ffmpeg. Other OS: https://ffmpeg.org/download.html')
-    profiles = ['translate','asr']
+    profiles = ['translate','asr','vieneu']
     if sys.platform in {'linux','win32'} and platform.machine().lower() in {'x86_64','amd64'}:
         profiles.append('intel')
     command = [uv,'sync','--locked','--inexact']

@@ -8,7 +8,7 @@ Phạm vi hiện tại là repo/CLI, chưa có giao diện hoặc gói ứng d�
 uv run python scripts/setup_engine.py
 ```
 
-Script tự cài profile ASR/dịch; trên Windows/Linux x86-64 thêm runtime Intel. Không yêu cầu tự chọn CUDA/OpenVINO để xử lý video. GPU phù hợp được ưu tiên, không có backend tương thích thì CPU. Trên máy NVIDIA, CTranslate2 vẫn cần CUDA/cuDNN tương thích để thực thi CUDA; thiếu runtime sẽ báo fallback CPU. Intel đã kiểm chứng trên Iris Xe trong WSL; NVIDIA mới kiểm thử logic chọn thiết bị/fallback, chưa thử phần cứng NVIDIA. Windows native/macOS chưa có kiểm thử độc lập trong lượt này.
+Script tự cài profile ASR/dịch/VieNeu; trên Windows/Linux x86-64 thêm runtime Intel. Không yêu cầu tự chọn CUDA/OpenVINO để xử lý video. GPU phù hợp được ưu tiên, không có backend tương thích thì CPU. Trên máy NVIDIA, CTranslate2 vẫn cần CUDA/cuDNN tương thích để thực thi CUDA; thiếu runtime sẽ báo fallback CPU. Intel đã kiểm chứng trên Iris Xe trong WSL; NVIDIA mới kiểm thử logic chọn thiết bị/fallback, chưa thử phần cứng NVIDIA. Windows native/macOS chưa có kiểm thử độc lập trong lượt này.
 
 Script không tự cài driver, restart WSL hoặc gỡ package ngoài profile. Lockfile dùng PyTorch/torchvision CPU khớp nhau cho runtime CPU; Intel ASR sử dụng OpenVINO, không dựa vào torch.cuda.
 
@@ -36,7 +36,7 @@ MKV giữ các track nguồn và đánh dấu audio/phụ đề Việt mặc đ�
 - ASR: ưu tiên NVIDIA/CTranslate2 khi CUDA khả dụng; tiếp theo Intel/OpenVINO nếu đã có runtime phù hợp; còn lại CPU.
 - Intel ASR dùng Optimum/OpenVINO, giữ beam mặc định 5. Đường GenAI từng lỗi remote tensor không được dùng trong engine. Model và VAD tải lần đầu theo backend; lần sau dùng cache.
 - `auto` thử CPU nếu suy luận GPU lỗi, giữ model/beam. Không âm thầm giảm beam. `--asr-device` dùng để ép thiết bị khi chẩn đoán; ép GPU/CUDA sẽ báo lỗi nếu thiết bị thất bại thay vì đổi thiết bị ngầm.
-- Dịch OPUS dùng PyTorch CPU/CUDA theo runtime cài đặt; chưa có backend dịch Intel trong lần triển khai này. Edge-TTS tạo giọng trên dịch vụ trực tuyến, không dùng GPU cục bộ. Video MKV là stream-copy nên không cần GPU encode.
+- Dịch OPUS dùng PyTorch CPU/CUDA theo runtime cài đặt; chưa có backend dịch Intel trong lần triển khai này. VieNeu tạo giọng cục bộ (Iris Xe hiện dùng CPU); Gemini/Edge-TTS được chọn riêng và tạo giọng trực tuyến. Video MKV là stream-copy nên không cần GPU encode.
 - Cache mặc định `~/.cache/jellydub`. Giọng và clip đã căn thời gian dùng chung theo nội dung/tham số; đổi thư mục xuất không tạo lại giọng. Cache/QC kiểm tra hash trước khi tái sử dụng.
 - Lỗi TTS: lệnh auto thử lại một lần; có thể chạy lại cùng lệnh để tiếp tục các câu chưa xong.
 
@@ -53,7 +53,7 @@ uv run --no-sync jellydub auto video.mp4 --asr-device cpu --out-dir output
 uv run --no-sync jellydub auto video.mp4 --mp4 --audio --out-dir output
 ```
 
-Edge-TTS cần mạng cho câu chưa cache. Lần đầu cần mạng để tải model; không đưa API key vào repo nếu chọn translator cần key. Nguồn/đầu ra cũ không bị tự xóa. Dùng thư mục output mới nếu muốn nhìn rõ chỉ các file của lần chạy mới; engine không xóa MP4/MP3 cũ có sẵn trong thư mục.
+VieNeu là TTS mặc định, chạy cục bộ sau lần tải model đầu tiên. Gemini chỉ dùng khi chọn `--tts gemini` hoặc profile Gemini; xem [README](../README.md#chọn-vieneu-hoặc-gemini-tts). Edge-TTS vẫn có thể chọn riêng và cần mạng cho câu chưa cache. Lần đầu cần mạng để tải model; không đưa API key vào repo nếu chọn translator cần key. Nguồn/đầu ra cũ không bị tự xóa. Dùng thư mục output mới nếu muốn nhìn rõ chỉ các file của lần chạy mới; engine không xóa MP4/MP3 cũ có sẵn trong thư mục.
 
 ## Bằng chứng triển khai
 

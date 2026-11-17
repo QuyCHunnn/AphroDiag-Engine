@@ -38,6 +38,7 @@ def test_auto_options_and_default_voiceover(monkeypatch, tmp_path):
     assert config.mix == 'voiceover'
     assert config.mkv and not config.mp4 and not config.audio
     assert config.asr_model == 'base' and config.asr_device == 'cpu'
+    assert config.tts == 'vieneu'
     assert str(tmp_path / 'report.json') in result.output
 
 
