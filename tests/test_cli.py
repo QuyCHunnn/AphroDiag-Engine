@@ -14,14 +14,31 @@ def test_dub_options(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr('jellydub.pipeline.dub', lambda *a, **kw: calls.append((a, kw)))
     result = runner.invoke(app, ['dub', 'movie[1].mkv', '--srt', 'vi.srt', '--source-lang', 'vi',
-                                 '--tts', 'vieneu', '--reference', 'actor=voice.wav', '--mkv',
+                                 '--tts', 'vieneu', '--reference', 'actor=voice.wav', '--mkv', '--mp4',
+                                 '--subtitle-font', 'Arial',
                                  '--mix', 'replace', '--fallback-voiceover', '--audio-stream', '2',
                                  '--out-dir', str(tmp_path)])
     assert result.exit_code == 0, result.output
     config = calls[0][0][2]
-    assert config.source_lang == 'vi' and config.mkv and config.audio_stream == 2
+    assert config.source_lang == 'vi' and config.mkv and config.mp4 and config.audio_stream == 2
+    assert config.subtitle_font == 'Arial'
     assert config.reference == ['actor=voice.wav'] and config.out_dir == tmp_path
     assert config.fallback_voiceover
+
+
+def test_auto_options_and_default_voiceover(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr('jellydub.pipeline.auto', lambda v, s, c, **kw: seen.append((v, s, c)) or {'report': tmp_path / 'report.json'})
+    result = runner.invoke(app, ['auto', 'movie.mp4', '--srt', 'movie.en.srt',
+                                 '--asr-model', 'base', '--asr-device', 'cpu',
+                                 '--out-dir', str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    _, srt, config = seen[0]
+    assert srt == Path('movie.en.srt')
+    assert config.mix == 'voiceover'
+    assert config.mkv and not config.mp4 and not config.audio
+    assert config.asr_model == 'base' and config.asr_device == 'cpu'
+    assert str(tmp_path / 'report.json') in result.output
 
 
 def test_config_override_and_false_flag(monkeypatch, tmp_path):
@@ -59,11 +76,13 @@ def test_doctor(monkeypatch):
     monkeypatch.setattr('jellydub.cli.shutil.which', lambda name: '/usr/bin/' + name)
     monkeypatch.setattr('jellydub.cli.importlib.util.find_spec', lambda name: object())
     result = runner.invoke(app, ['doctor'])
-    assert result.exit_code == 0 and 'translate: installed' in result.output
+    assert result.exit_code == 0 and 'translate: installed' in result.output and 'asr: installed' in result.output
 
 
 @pytest.mark.parametrize('text', ['[jellydub]\nunknown=1', '[jellydub]\naudio_stream=-1',
-                                   '[jellydub]\nmkv="yes"', '[jellydub]\nreference="bad"',
+                                   '[jellydub]\nmkv="yes"', '[jellydub]\nmp4="yes"',
+                                   '[jellydub]\nasr_model=""', '[jellydub]\nasr_device="tpu"',
+                                   '[jellydub]\nsubtitle_font=""', '[jellydub]\nreference="bad"',
                                    '[jellydub]\ncache_dir=42', '[jellydub]\nrate=1'])
 def test_invalid_config(tmp_path, text):
     path = tmp_path / 'bad.toml'
@@ -234,3 +253,12 @@ def test_search_online_flag_and_config_override(monkeypatch, tmp_path, command):
     result = runner.invoke(app, [command, 'movie.mkv', '--config', str(config), '--no-search-online'])
     assert result.exit_code == 0, result.output
     assert not seen[1].search_online
+
+
+@pytest.mark.parametrize('command', ['auto', 'dub'])
+def test_optional_media_exports_require_opt_in(monkeypatch, command):
+    seen = []
+    monkeypatch.setattr(f'jellydub.pipeline.{command}', lambda v,s,c,**kw: seen.append(c) or {})
+    result = runner.invoke(app, [command, 'video.mp4', '--mp4', '--audio'])
+    assert result.exit_code == 0, result.output
+    assert seen[0].mp4 and seen[0].audio

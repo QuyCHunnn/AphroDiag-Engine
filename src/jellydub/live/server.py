@@ -50,12 +50,9 @@ class DubServer:
     def _tts(self):
         if self._provider is None:
             from ..tts import get_provider
+            from ..pipeline import tts_options
             c = self.config
-            options = {"rate": c.rate, "pitch": c.pitch} if c.tts == "edge" else {
-                "device": "cpu" if c.device == "auto" else c.device, "cache_dir": c.cache_dir / "voices"}
-            if c.voice is not None:
-                options["voice"] = c.voice
-            self._provider = get_provider(c.tts, **options)
+            self._provider = get_provider(c.tts, **tts_options(c))
         return self._provider
 
     def _translate(self, cues):
@@ -63,7 +60,7 @@ class DubServer:
         with self._translator_lock:
             if self._translator is None:
                 c = self.config
-                self._translator = pipeline.get_translator(name=c.translator, model=c.translator_model, device=c.device)
+                self._translator = pipeline.get_translator(**pipeline.translator_options(c))
             return pipeline.translate_cues(cues, self._translator, self.root / "translations")
 
     def engine(self) -> Engine:
@@ -79,7 +76,7 @@ class DubServer:
         with self._translator_lock:
             if self._translator is None:
                 c = self.config
-                self._translator = pipeline.get_translator(name=c.translator, model=c.translator_model, device=c.device)
+                self._translator = pipeline.get_translator(**pipeline.translator_options(c))
             translator = self._translator
             cache_dir = self.root / "translations"
             if not isinstance(translator, _ChunkedTranslator):

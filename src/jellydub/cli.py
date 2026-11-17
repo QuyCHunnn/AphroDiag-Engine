@@ -56,7 +56,9 @@ def dub(
     source_lang: Annotated[str | None, typer.Option(help="auto (default), en or vi")] = None,
     translator: Annotated[str | None, typer.Option(help="opus-mt (offline), gemini (API), agy or agy-stream (experimental CLI)")] = None,
     translator_model: Annotated[str | None, typer.Option(help="Model override for the selected translator")] = None,
-    tts: Annotated[str | None, typer.Option(help="edge or vieneu")] = None,
+    tts: Annotated[str | None, typer.Option(help="edge, vieneu or gemini")] = None,
+    tts_model: Annotated[str | None, typer.Option(help="Gemini TTS model id")] = None,
+    tts_style: Annotated[str | None, typer.Option(help="Gemini speaking instructions")] = None,
     tts_workers: Annotated[int | None, typer.Option(min=1, help="Concurrent TTS requests (default 4; limited by provider)")] = None,
     voice: Annotated[str | None, typer.Option()] = None,
     rate: Annotated[str | None, typer.Option()] = None,
@@ -64,6 +66,9 @@ def dub(
     reference: Annotated[list[str] | None, typer.Option(help="FILE or LABEL=FILE; repeat for speakers")] = None,
     mix: Annotated[str | None, typer.Option(help="dub-only, voiceover or replace")] = None,
     mkv: Annotated[bool | None, typer.Option("--mkv/--no-mkv")] = None,
+    mp4: Annotated[bool | None, typer.Option("--mp4/--no-mp4", help="Export H.264 MP4 with Vietnamese subtitles burned in")] = None,
+    subtitle_font: Annotated[str | None, typer.Option(help="Font family for burned-in MP4 subtitles")] = None,
+    audio: Annotated[bool | None, typer.Option("--audio/--no-audio", help="Also export a standalone MP3")] = None,
     out_dir: Annotated[Path | None, typer.Option()] = None,
     cache_dir: Annotated[Path | None, typer.Option()] = None,
     config: Annotated[Path | None, typer.Option()] = None,
@@ -77,12 +82,57 @@ def dub(
     providers: Annotated[list[str] | None, typer.Option(help="Provider name; repeat or separate with commas")] = None,
 ):
     """Create a synchronized Vietnamese dub; keep the original video."""
-    options = dict(source_lang=source_lang, translator=translator, translator_model=translator_model, tts=tts, tts_workers=tts_workers, voice=voice, rate=rate, pitch=pitch,
-                   reference=reference or None, mix=mix, mkv=mkv, out_dir=out_dir,
+    options = dict(source_lang=source_lang, translator=translator, translator_model=translator_model, tts=tts, tts_model=tts_model, tts_style=tts_style, tts_workers=tts_workers, voice=voice, rate=rate, pitch=pitch,
+                   reference=reference or None, mix=mix, mkv=mkv, mp4=mp4, audio=audio, subtitle_font=subtitle_font, out_dir=out_dir,
                    cache_dir=cache_dir, audio_stream=audio_stream,
                    fallback_voiceover=fallback_voiceover, device=device, max_tempo=max_tempo,
                    subs=subs, download=download, search_online=search_online, providers=_providers(providers))
     _run(lambda: pipeline.dub(video, srt, load_config(config, **options), report=_report))
+
+
+@app.command()
+def auto(
+    video: Path,
+    srt: Annotated[Path | None, typer.Option("--srt", help="Optional matching English or Vietnamese SRT")] = None,
+    source_lang: Annotated[str | None, typer.Option(help="auto (default), en or vi")] = None,
+    asr_model: Annotated[str | None, typer.Option(help="Whisper model used when no usable subtitle is found")] = None,
+    asr_device: Annotated[str | None, typer.Option(help="auto, cpu, cuda (NVIDIA), gpu (Intel)")] = None,
+    asr_backend: Annotated[str | None, typer.Option(help="auto, faster-whisper, openvino or experimental genai")] = None,
+    asr_python: Annotated[str | None, typer.Option(help="Isolated interpreter for experimental GenAI ASR")] = None,
+    pipeline_mode: Annotated[str | None, typer.Option(help="sequential or experimental overlap (ASR + translation/TTS)")] = None,
+    asr_beam_size: Annotated[int | None, typer.Option(min=1, help="Whisper beam size (default 5)")] = None,
+    translator: Annotated[str | None, typer.Option(help="opus-mt, gemini, agy or agy-stream")] = None,
+    translator_model: Annotated[str | None, typer.Option()] = None,
+    tts: Annotated[str | None, typer.Option(help="edge, vieneu or gemini")] = None,
+    tts_model: Annotated[str | None, typer.Option(help="Gemini TTS model id")] = None,
+    tts_style: Annotated[str | None, typer.Option(help="Gemini speaking instructions")] = None,
+    tts_workers: Annotated[int | None, typer.Option(min=1)] = None,
+    tts_precision: Annotated[str | None, typer.Option(help="fp32 or experimental CPU int8 (VieNeu)")] = None,
+    voice: Annotated[str | None, typer.Option()] = None,
+    mix: Annotated[str | None, typer.Option(help="dub-only, voiceover or replace")] = None,
+    mp4: Annotated[bool | None, typer.Option("--mp4/--no-mp4", help="Opt in to burned-in MP4 export")] = None,
+    audio: Annotated[bool | None, typer.Option("--audio/--no-audio", help="Opt in to standalone MP3 export")] = None,
+    out_dir: Annotated[Path | None, typer.Option()] = None,
+    cache_dir: Annotated[Path | None, typer.Option()] = None,
+    config: Annotated[Path | None, typer.Option(help="TOML configuration file")] = None,
+    device: Annotated[str | None, typer.Option(help="Device for local translation/separation")] = None,
+    tts_device: Annotated[str | None, typer.Option(help="VieNeu device: auto, cpu or cuda")] = None,
+    translate_device: Annotated[str | None, typer.Option(help="OPUS device: auto, cpu or cuda")] = None,
+):
+    """Automatically find or transcribe subtitles, dub the video, and export MKV/SRT by default."""
+    def run():
+        options = dict(source_lang=source_lang, asr_model=asr_model, asr_device=asr_device,
+                       asr_backend=asr_backend, asr_python=asr_python, pipeline_mode=pipeline_mode, asr_beam_size=asr_beam_size,
+                       translator=translator, translator_model=translator_model, tts=tts, tts_model=tts_model, tts_style=tts_style,
+                       tts_workers=tts_workers, tts_precision=tts_precision, voice=voice, mix=mix, mp4=mp4, audio=audio, out_dir=out_dir,
+                       cache_dir=cache_dir, device=device, tts_device=tts_device,
+                       translate_device=translate_device)
+        if mix is None and config is None:
+            options["mix"] = "voiceover"
+        outputs = pipeline.auto(video, srt, load_config(config, **options), report=_report)
+        for path in outputs.values():
+            typer.echo(str(path))
+    _run(run)
 
 
 def _providers(values: list[str] | None) -> list[str] | None:
@@ -117,7 +167,9 @@ def serve(
     port: Annotated[int, typer.Option()] = 8765,
     translator: Annotated[str | None, typer.Option(help="opus-mt (offline), gemini (API), agy or agy-stream (experimental CLI)")] = None,
     translator_model: Annotated[str | None, typer.Option(help="Model override for the selected translator")] = None,
-    tts: Annotated[str | None, typer.Option(help="edge or vieneu")] = None,
+    tts: Annotated[str | None, typer.Option(help="edge, vieneu or gemini")] = None,
+    tts_model: Annotated[str | None, typer.Option(help="Gemini TTS model id")] = None,
+    tts_style: Annotated[str | None, typer.Option(help="Gemini speaking instructions")] = None,
     tts_workers: Annotated[int | None, typer.Option(min=1, help="Concurrent TTS requests (default 4; limited by provider)")] = None,
     voice: Annotated[str | None, typer.Option()] = None,
     rate: Annotated[str | None, typer.Option()] = None,
@@ -133,7 +185,7 @@ def serve(
     """Run the live dubbing server used by the TinyTV Dub app (LAN only, no auth)."""
     def run():
         from .live.server import DubServer
-        settings = load_config(config, translator=translator, translator_model=translator_model, tts=tts,
+        settings = load_config(config, translator=translator, translator_model=translator_model, tts=tts, tts_model=tts_model, tts_style=tts_style,
                                tts_workers=tts_workers, voice=voice, rate=rate, pitch=pitch,
                                max_tempo=max_tempo if max_tempo is not None or config else 1.35,
                                cache_dir=cache_dir, device=device)
@@ -167,7 +219,9 @@ def stream(
     source_lang: Annotated[str | None, typer.Option(help="auto, en or vi")] = None,
     translator: Annotated[str | None, typer.Option(help="opus-mt, gemini, agy or agy-stream")] = None,
     translator_model: Annotated[str | None, typer.Option()] = None,
-    tts: Annotated[str | None, typer.Option(help="edge or vieneu")] = None,
+    tts: Annotated[str | None, typer.Option(help="edge, vieneu or gemini")] = None,
+    tts_model: Annotated[str | None, typer.Option(help="Gemini TTS model id")] = None,
+    tts_style: Annotated[str | None, typer.Option(help="Gemini speaking instructions")] = None,
     tts_workers: Annotated[int | None, typer.Option(min=1)] = None,
     voice: Annotated[str | None, typer.Option()] = None,
     rate: Annotated[str | None, typer.Option()] = None,
@@ -188,7 +242,7 @@ def stream(
         # Reject invalid origins before loading models or publishing any output.
         origin = public_base_url(public_url) if public_url is not None else None
         settings = load_config(config, source_lang=source_lang, translator=translator,
-                               translator_model=translator_model, tts=tts, tts_workers=tts_workers,
+                               translator_model=translator_model, tts=tts, tts_model=tts_model, tts_style=tts_style, tts_workers=tts_workers,
                                voice=voice, rate=rate, pitch=pitch, audio_stream=audio_stream,
                                mix=mix if mix is not None or config else "voiceover",
                                max_tempo=max_tempo if max_tempo is not None or config else 1.35,
@@ -229,6 +283,28 @@ def stream(
 
 
 @app.command()
+def preview(
+    srt: Annotated[Path, typer.Option("--srt", help="Reviewed Vietnamese SRT, with optional speaker labels")],
+    out_dir: Annotated[Path, typer.Option()] = Path("preview"),
+    start: Annotated[float, typer.Option(min=0)] = 0,
+    seconds: Annotated[float, typer.Option(min=1, max=30)] = 20,
+    config: Annotated[Path | None, typer.Option()] = None,
+    tts: Annotated[str | None, typer.Option()] = None,
+    tts_model: Annotated[str | None, typer.Option()] = None,
+    tts_style: Annotated[str | None, typer.Option()] = None,
+    voice: Annotated[str | None, typer.Option()] = None,
+    cache_dir: Annotated[Path | None, typer.Option()] = None,
+):
+    """Create a listening sample before spending time on a full dub."""
+    def run():
+        from .preview import create_preview
+        settings = load_config(config, tts=tts, tts_model=tts_model, tts_style=tts_style, voice=voice, cache_dir=cache_dir)
+        typer.echo(str(create_preview(srt, out_dir, settings, start=start,
+                                      seconds=seconds, report=_report)))
+    _run(run)
+
+
+@app.command()
 def doctor():
     """Check FFmpeg and installed optional packages without loading models."""
     missing = False
@@ -238,11 +314,22 @@ def doctor():
         missing |= found is None
     for extra, modules in (("core", ("edge_tts", "srt")),
                            ("translate", ("transformers", "torch", "sentencepiece", "sacremoses")),
+                           ("asr", ("faster_whisper",)),
+                           ("intel", ("openvino", "optimum")),
                            ("vieneu", ("vieneu",)), ("separate", ("audio_separator",))):
         absent = [name for name in modules if importlib.util.find_spec(name) is None]
         typer.echo(f"{extra}: {'installed' if not absent else 'missing ' + ', '.join(absent)}")
         if extra == "core" and absent:
             missing = True
+    from .devices import hardware_capabilities
+    capabilities = hardware_capabilities()
+    if "error" in capabilities:
+        typer.echo(f"GPU capabilities: unknown ({capabilities['error']})")
+    else:
+        gpu = "NVIDIA/CUDA" if capabilities["asr_cuda"] else "Intel/OpenVINO" if capabilities["asr_openvino"] else "none (CPU fallback)"
+        typer.echo(f"ASR GPU: {gpu}")
+        typer.echo("VieNeu/OPUS auto: " + ("cuda" if capabilities["torch_cuda"] else "cpu (Torch CUDA unavailable)"))
+    typer.echo("Edge TTS: remote service; local GPU selection does not apply")
     if missing:
         raise typer.Exit(1)
 

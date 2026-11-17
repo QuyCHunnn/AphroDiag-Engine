@@ -18,7 +18,7 @@ def test_real_dub(tmp_path, language):
     original_hash = hashlib.sha256(video.read_bytes()).hexdigest()
     output = tmp_path / 'output'
     args = ['dub', str(video), '--srt', str(Path(__file__).with_name(f'sample.{language}.srt')),
-            '--source-lang', language, '--tts', 'edge', '--mix', 'voiceover', '--mkv',
+            '--source-lang', language, '--tts', 'edge', '--mix', 'voiceover', '--mkv', '--audio',
             '--out-dir', str(output), '--cache-dir', str(tmp_path / 'cache')]
     runner = CliRunner()
     result = runner.invoke(app, args)
@@ -29,6 +29,9 @@ def test_real_dub(tmp_path, language):
     mkv = output / 'sample[1].AI-Dub.vi.mkv'
     info = probe(mkv)
     assert len([s for s in info['streams'] if s['codec_type'] == 'audio']) == 2
+    subtitles = [s for s in info['streams'] if s['codec_type'] == 'subtitle']
+    assert len(subtitles) == 1
+    assert subtitles[0]['tags']['language'] == 'vie'
     assert next(s for s in info['streams'] if s['codec_type'] == 'video')['codec_name'] == 'mpeg4'
     assert hashlib.sha256(video.read_bytes()).hexdigest() == original_hash
     # A second run must reuse synthesis outputs.

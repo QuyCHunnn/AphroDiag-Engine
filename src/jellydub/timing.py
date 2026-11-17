@@ -7,7 +7,7 @@ import os
 import wave
 from pathlib import Path
 
-from .cache import cache_key, tmp_path_for
+from .cache import cache_key, cache_lock, cached_file_matches, record_cached_file, file_digest, tmp_path_for
 from .ffmpeg import duration, run_ffmpeg
 from .models import SAMPLE_RATE, Cue, JellyDubError, PlacedClip, SynthResult
 
@@ -100,21 +100,23 @@ def align(
             stat = source.stat()
         except OSError as exc:
             raise JellyDubError(f"Could not read speech for cue {clip.cue_index}: {exc}") from exc
-        key = cache_key("alignment-v1", str(source), stat.st_size, stat.st_mtime_ns, clip.tempo, fade_ms)
+        key = cache_key("alignment-v1", str(source), stat.st_size, stat.st_mtime_ns, file_digest(source), clip.tempo, fade_ms)
         target = work_dir / f"aligned-{key}.wav"
-        if not target.exists():
-            fade = min(fade_ms / 1000, clip.duration / 2)
-            filters = [f"atempo={clip.tempo:.12g}"]
-            if fade:
-                # Reverse twice to fade the true end despite atempo sample rounding.
-                filters.extend([f"afade=t=in:d={fade:.9f}", "areverse", f"afade=t=in:d={fade:.9f}", "areverse"])
-            temporary = tmp_path_for(target)
-            try:
-                run_ffmpeg(["-i", str(source), "-af", ",".join(filters), "-ar", str(SAMPLE_RATE),
-                            "-ac", "1", "-c:a", "pcm_s16le", str(temporary)])
-                os.replace(temporary, target)
-            finally:
-                temporary.unlink(missing_ok=True)
+        with cache_lock(target.with_suffix(".lock")):
+            if not cached_file_matches(target, key):
+                fade = min(fade_ms / 1000, clip.duration / 2)
+                filters = [f"atempo={clip.tempo:.12g}"]
+                if fade:
+                    # Reverse twice to fade the true end despite atempo sample rounding.
+                    filters.extend([f"afade=t=in:d={fade:.9f}", "areverse", f"afade=t=in:d={fade:.9f}", "areverse"])
+                temporary = tmp_path_for(target)
+                try:
+                    run_ffmpeg(["-i", str(source), "-af", ",".join(filters), "-ar", str(SAMPLE_RATE),
+                                "-ac", "1", "-c:a", "pcm_s16le", str(temporary)])
+                    os.replace(temporary, target)
+                    record_cached_file(target, key)
+                finally:
+                    temporary.unlink(missing_ok=True)
         clip.path = target
         clip.duration = duration(target)
         # atempo may differ by a few samples from the estimated duration.

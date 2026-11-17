@@ -59,10 +59,15 @@ External audio uses `<stem>.AI-Dub.vi.mp3`; subtitles use `<stem>.vi.srt`.
 Jellyfin's documented `Film.English Commentary.en.mp3` example confirms the
 `<stem>.<title>.<language>.<extension>` layout. Optional MKV export copies all
 original streams, metadata and chapters, encoding only the appended dub to AAC
-with `language=vie` and a Vietnamese title. It keeps the original 5.1 audio and
-video codecs. An original stream unsupported by Matroska causes an explicit
+with `language=vie` and a Vietnamese title, and adds the generated SRT as a
+selectable SubRip subtitle track. It keeps the original 5.1 audio and video
+codecs. An original stream unsupported by Matroska causes an explicit
 FFmpeg error; no original stream is silently dropped. Exports use a temporary
 sibling and rename only after success, and refuse input/output path collisions.
+
+Optional MP4 export selects the mixed Vietnamese audio and renders the SRT into
+the image using FFmpeg's `subtitles` filter and libass. It re-encodes video to
+H.264 and audio to AAC; `--subtitle-font` selects the font family.
 
 ## Sources checked 2026-10-26
 

@@ -21,6 +21,7 @@ from typing import Callable, Protocol
 
 from .cache import atomic_write_text, cache_key
 from .models import Cue, JellyDubError
+from .performance_trace import span
 
 DEFAULT_MODEL = "Helsinki-NLP/opus-mt-en-vi"
 
@@ -59,7 +60,8 @@ class OpusMTTranslator:
     def translate_batch(self, texts: list[str], *, cue_indices: list[list[int]] | None = None) -> list[str]:
         if not texts:
             return []
-        self._load()
+        with span("translation.load", backend=type(self).__name__):
+            self._load()
         try:
             import torch
             inputs = self._tokenizer(texts, return_tensors="pt", padding=True, truncation=False)
@@ -69,7 +71,7 @@ class OpusMTTranslator:
             inputs = inputs.to(self._model.device)
             retained = None
             for attempt in range(2):
-                with torch.inference_mode():
+                with torch.inference_mode(), span("translation.generate", backend=type(self).__name__, batch=len(texts), attempt=attempt):
                     output = self._model.generate(
                         **inputs, no_repeat_ngram_size=3,
                         repetition_penalty=1.2 if attempt == 0 else 1.5,
@@ -474,19 +476,50 @@ def get_translator(name: str = "opus-mt", model: str | None = None, device: str 
     raise JellyDubError(f"Unknown translator: {name}")
 
 
-def _translate_with_cue_backend(cues, translator, cache_dir, batch_size, on_progress):
+def _cached_translation(path):
+    """Read or lazily import an exact content/context key from a legacy job."""
+    def read(candidate):
+        value = json.loads(candidate.read_text(encoding="utf-8"))["text"]
+        if not isinstance(value, str):
+            raise ValueError("invalid translation cache")
+        return value
+
+    if path.exists():
+        return read(path)
+    if path.parent.name == "translations":
+        for old in path.parent.parent.glob(f"*/translations/{path.name}"):
+            try:
+                value = read(old)
+                if value.strip():
+                    atomic_write_text(path, json.dumps({"text": value}, ensure_ascii=False))
+                    return value
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+    raise FileNotFoundError(path)
+
+
+def _translate_with_cue_backend(cues, translator, cache_dir, batch_size, on_progress,
+                                *, strict_context_cache=False):
     result = list(cues)
     identity = translator.cache_id()
     done = 0
     for offset in range(0, len(cues), batch_size):
         indices = list(range(offset, min(len(cues), offset + batch_size)))
+        # A contextual model sees the whole batch, including later lines, and
+        # translated history. Shared caches must not reuse a line under a
+        # different prompt merely because its preceding source text matches.
+        prompt_identity = cache_key(
+            identity, "prompt-batch-v2",
+            [(cues[j].text, cues[j].duration) for j in indices],
+            [(cues[j].text, result[j].text) for j in range(max(0, offset - 5), offset)],
+        ) if strict_context_cache else identity
         pending, paths = [], []
         for j in indices:
             # Source context and duration affect the prompt and therefore the cache key.
             context = [(c.text, c.duration) for c in cues[max(0, j - 5):j]]
-            path = Path(cache_dir) / f"{cache_key(identity, cues[j].text, cues[j].duration, context)}.json"
+            path = Path(cache_dir) / f"{cache_key(prompt_identity, cues[j].text, cues[j].duration, context)}.json"
             try:
-                value = json.loads(path.read_text(encoding="utf-8"))["text"]
+                value = _cached_translation(path)
                 if not isinstance(value, str) or (cues[j].text.strip() and not value.strip()):
                     raise ValueError("invalid cache")
                 result[j] = replace(cues[j], text=value)
@@ -513,22 +546,8 @@ def _translate_with_cue_backend(cues, translator, cache_dir, batch_size, on_prog
     return result
 
 
-def translate_cues(
-    cues: list[Cue], translator: Translator, cache_dir: Path, batch_size: int = 16,
-    on_progress: Callable[[int, int], None] | None = None,
-) -> list[Cue]:
-    """Translate with per-cue JSON caching. Join adjacent unfinished dialogue for context.
-
-    A joined translation is distributed by source word proportions, preserving cue timing.
-    Groups never cross speaker changes or gaps longer than one second.
-    """
-    if batch_size < 1:
-        raise JellyDubError("Translation batch_size must be positive")
-    if callable(getattr(translator, "translate_cues_batch", None)):
-        return _translate_with_cue_backend(
-            cues, translator, cache_dir, getattr(translator, "batch_size", batch_size), on_progress)
-    cache_dir = Path(cache_dir)
-    result = list(cues)
+def dialogue_groups(cues):
+    """Greedy unfinished pairs; shared by file translation and progressive prefetch."""
     groups = []
     i = 0
     while i < len(cues):
@@ -540,6 +559,28 @@ def translate_cues(
             group.append(i + 1)
         groups.append(group)
         i += len(group)
+    return groups
+
+
+def translate_cues(
+    cues: list[Cue], translator: Translator, cache_dir: Path, batch_size: int = 16,
+    on_progress: Callable[[int, int], None] | None = None,
+    *, strict_context_cache: bool = False,
+) -> list[Cue]:
+    """Translate with per-cue JSON caching. Join adjacent unfinished dialogue for context.
+
+    A joined translation is distributed by source word proportions, preserving cue timing.
+    Groups never cross speaker changes or gaps longer than one second.
+    """
+    if batch_size < 1:
+        raise JellyDubError("Translation batch_size must be positive")
+    if callable(getattr(translator, "translate_cues_batch", None)):
+        return _translate_with_cue_backend(
+            cues, translator, cache_dir, getattr(translator, "batch_size", batch_size), on_progress,
+            strict_context_cache=strict_context_cache)
+    cache_dir = Path(cache_dir)
+    result = list(cues)
+    groups = dialogue_groups(cues)
     pending = []
     done = 0
     identity = translator.cache_id()
@@ -547,7 +588,7 @@ def translate_cues(
         context = [cues[j].text for j in group]
         paths = [cache_dir / f"{cache_key(identity, cues[j].text, context, 'context-v1')}.json" for j in group]
         try:
-            values = [json.loads(p.read_text(encoding="utf-8"))["text"] for p in paths]
+            values = [_cached_translation(p) for p in paths]
             if not all(isinstance(v, str) and (v.strip() or not cues[j].text.strip()) for j, v in zip(group, values)):
                 raise ValueError("invalid cache")
         except (OSError, ValueError, KeyError, TypeError):

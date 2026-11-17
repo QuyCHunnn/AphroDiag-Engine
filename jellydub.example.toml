@@ -3,19 +3,32 @@ source_lang = "auto" # detect Vietnamese filename tags/diacritics; en | vi overr
 translator = "opus-mt" # offline default; gemini = online API; agy / agy-stream = experimental CLI
 # translator_model = "MODEL_ID" # optional override; omit for the backend default
 # Gemini credentials: set GEMINI_API_KEY in your environment, never in this file.
+asr_model = "small" # used by `jellydub auto` only when no usable subtitle is found
+asr_device = "auto" # auto | cpu | cuda (NVIDIA) | gpu (Intel)
+asr_backend = "auto" # auto | faster-whisper | openvino (extra intel)
+# Experimental native backend: asr_backend = "genai", source_lang = "en" or "vi"
+# asr_python = ".venv-native-asr-next/bin/python" # isolated compatible GenAI runtime
+asr_beam_size = 5 # kept unchanged when falling back from GPU to CPU
 tts = "edge"
-tts_workers = 4 # recommend 3–4 for Edge; VieNeu is limited to one worker
+tts_workers = 4 # network requests; VieNeu is limited to one worker
+tts_blas_threads = 2 # VieNeu CPU BLAS threads; 0 keeps the native default
+tts_cpu_threads = 0 # VieNeu ONNX threads; 0 uses the SDK hardware default
 # Omit voice when changing engines to use that engine's preset.
 voice = "vi-VN-HoaiMyNeural"
 rate = "+0%"
 pitch = "+0Hz"
 mix = "dub-only" # dub-only | voiceover | replace
-mkv = false
+mkv = true
+mp4 = false # opt-in H.264/AAC video with burned-in subtitles
+audio = false # opt-in standalone MP3; MKV audio is encoded directly from the lossless mix
+subtitle_font = "DejaVu Sans"
 audio_stream = 0 # audio stream a:0, not global stream index
 cache_dir = "~/.cache/jellydub"
 # out_dir = "/tmp/jellydub-output"
 fallback_voiceover = false
-device = "auto" # local translation/separation; VieNeu uses CPU for auto
+device = "auto" # local models; auto chooses Torch CUDA when available, otherwise CPU
+# tts_device = "cpu" # override VieNeu independently: auto | cpu | cuda
+# translate_device = "cpu" # override OPUS independently: auto | cpu | cuda
 max_tempo = 1.25
 # VieNeu only: clean 3–8 second clips; one default or several labelled refs.
 # reference = ["actor.wav"]

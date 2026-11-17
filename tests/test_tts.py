@@ -96,7 +96,7 @@ def test_vieneu_lazy_profile_cache_and_close(tmp_path, monkeypatch):
         def close(self):
             self.closed = True
     monkeypatch.setitem(sys.modules, "vieneu", SimpleNamespace(Vieneu=Model))
-    provider = VieNeuTTS(speaker_refs={"actor": ref}, cache_dir=tmp_path / "profiles")
+    provider = VieNeuTTS(speaker_refs={"actor": ref}, cache_dir=tmp_path / "profiles", blas_threads=0)
     assert not instances
     provider.synthesize("hello", tmp_path / "out.wav", speaker="actor")
     provider.synthesize("again", tmp_path / "out.wav", speaker="actor")
@@ -127,3 +127,57 @@ def test_corrupt_cache_regenerated_and_silence_rejected(tmp_path):
             run_ffmpeg(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "0.1", str(out_path)])
     results, failures = synthesize_cues([Cue(2, 0, 1, "silence")], Silent(), tmp_path, retries=0)
     assert not results and len(failures) == 1
+
+
+def test_edge_routes_speaker_voices_and_separates_cache(tmp_path, monkeypatch):
+    calls = []
+    class Communicate:
+        def __init__(self, text, voice, **kwargs):
+            calls.append((text, voice))
+        async def save(self, path):
+            Path(path).write_bytes(b'audio')
+    from pathlib import Path
+    monkeypatch.setitem(sys.modules, 'edge_tts', SimpleNamespace(Communicate=Communicate))
+    provider = EdgeTTS(voice='male', speaker_voices={'LUNA': 'female'})
+    provider.synthesize('hello', tmp_path / 'female.mp3', speaker='LUNA')
+    provider.synthesize('hello', tmp_path / 'male.mp3', speaker='D-WOLF')
+    assert calls == [('hello', 'female'), ('hello', 'male')]
+    assert provider.cache_id() != EdgeTTS(voice='male').cache_id()
+    assert provider.cache_id() != EdgeTTS(voice='male', speaker_voices={'LUNA': 'other'}).cache_id()
+
+
+def test_speaker_voice_config_rejects_invalid_mapping():
+    from jellydub.config import Config
+    from jellydub.models import JellyDubError
+    Config(speaker_voices={'LUNA': 'female'}).validate()
+    for mapping in ({'LUNA': ''}, {'': 'female'}, [], {'LUNA': 1}):
+        with pytest.raises(JellyDubError, match='speaker_voices'):
+            Config(speaker_voices=mapping).validate()
+    Config(tts='vieneu', speaker_voices={'LUNA': 'Trúc Ly'}).validate()
+
+
+def test_vieneu_speaker_presets_and_reference_precedence(tmp_path, monkeypatch):
+    calls = []
+    class Model:
+        def infer(self, text, voice):
+            calls.append(voice)
+            return 'audio'
+        def save(self, audio, path):
+            pass
+        def close(self):
+            pass
+    monkeypatch.setitem(sys.modules, 'vieneu', SimpleNamespace(Vieneu=lambda **kw: Model()))
+    provider = VieNeuTTS(speaker_voices={'LUNA': 'Trúc Ly', 'RAPTOR': 'Hải Đăng'}, blas_threads=0)
+    provider.synthesize('nữ', tmp_path / 'female.wav', speaker='LUNA')
+    provider.synthesize('nam', tmp_path / 'male.wav', speaker='RAPTOR')
+    assert calls == ['Trúc Ly', 'Hải Đăng']
+    assert provider.cache_id() != VieNeuTTS().cache_id()
+    assert provider.cache_id() != VieNeuTTS(speaker_voices={'LUNA': 'Mai Anh'}).cache_id()
+    ref = tmp_path / 'ref.wav'
+    provider.speaker_refs['LUNA'] = ref
+    monkeypatch.setattr(provider, '_fingerprint', lambda p: 'profile')
+    provider._profiles['unused'] = 'unused'
+    # An invalid explicit reference keeps the mapped female preset on fallback.
+    with pytest.warns(UserWarning, match='Trúc Ly'):
+        assert provider._voice(object(), 'LUNA') == 'Trúc Ly'
+    provider.close()

@@ -1,17 +1,20 @@
 # JellyDub Engine
 
-**Tạo thuyết minh tiếng Việt từ phụ đề, đồng bộ với phim.**
+Hướng dẫn luồng mới **một lệnh → MKV + SRT**, setup và GPU/fallback: [docs/cli-guide.md](docs/cli-guide.md).
 
-Engine Python độc lập dành cho xử lý file, phát trực tiếp và tích hợp Jellyfin/TinyTV. Nhận phụ đề SRT tiếng Anh hoặc tiếng Việt, tạo giọng đọc, căn thời gian rồi trộn/xuất âm thanh. File phim gốc được giữ nguyên.
+**Tự động tạo thuyết minh tiếng Việt và phụ đề đồng bộ từ video.**
 
-`SRT → Dịch tiếng Việt → Tổng hợp giọng nói → Căn thời gian → Trộn / Xuất / Stream`
+Engine Python độc lập dành cho xử lý file, phát trực tiếp và tích hợp Jellyfin/TinyTV. Có thể tự tìm phụ đề, nhận dạng lời nói khi không có phụ đề, dịch sang tiếng Việt, tạo giọng đọc, căn thời gian rồi xuất video. File phim gốc được giữ nguyên.
+
+`Video → Tìm SRT / ASR → Dịch tiếng Việt → Tổng hợp giọng nói → Căn thời gian → Trộn / Xuất`
 
 ## Điểm nổi bật
 
 - **Ba cách dùng:** CLI xử lý file, HTTP API tạo giọng theo vị trí phát, HLS thử nghiệm cho Jellyfin.
-- **Linh hoạt backend:** OPUS-MT hoặc Gemini để dịch; Edge-TTS hoặc VieNeu để đọc.
+- **Linh hoạt backend:** OPUS-MT hoặc Gemini để dịch; Edge-TTS, VieNeu hoặc Gemini TTS để đọc.
 - **Tái sử dụng cache:** lưu bản dịch và từng đoạn giọng nói, tiếp tục công việc khi chạy lại.
 - **Tìm phụ đề:** hỗ trợ file cạnh phim, phụ đề nhúng và nguồn trực tuyến tùy chọn.
+- **Tự động hóa CLI:** một lệnh tìm phụ đề hoặc chép lời, lồng tiếng, mặc định xuất MKV + SRT và lưu QC trong cache.
 
 ## Bắt đầu nhanh
 
@@ -53,9 +56,18 @@ OPUS-MT chạy cục bộ sau lần tải model đầu tiên. Để dùng Gemini
 # Hạ tiếng gốc khi có lời thuyết minh
 uv run jellydub dub movie.mkv --srt movie.vi.srt --mix voiceover --out-dir ./dubbed
 
+# Xuất MKV có track phụ đề bật/tắt và MP4 có phụ đề gắn cố định
+uv run jellydub dub movie.mkv --srt movie.vi.srt --mix voiceover \
+  --mkv --mp4 --out-dir ./dubbed
+
 # Tự tìm phụ đề trong máy, không tìm trên mạng
 uv run jellydub dub movie.mkv --no-download --out-dir ./dubbed
 ```
+
+Mặc định xuất MKV và SRT tiếng Việt. Dùng `--audio` nếu cần thêm MP3 thuyết minh. `--mkv` thêm audio
+và SRT tiếng Việt thành các track riêng, giữ nguyên các stream nguồn.
+`--mp4` xuất video H.264/AAC với SRT được render vào hình; font mặc định là
+`DejaVu Sans` và có thể đổi bằng `--subtitle-font`.
 
 | Chế độ trộn | Kết quả |
 | --- | --- |
@@ -65,7 +77,28 @@ uv run jellydub dub movie.mkv --no-download --out-dir ./dubbed
 
 Có thể tải phụ đề trực tuyến bằng extra `opensubtitles`. Xem cấu hình mẫu tại [jellydub.example.toml](jellydub.example.toml) và hướng dẫn [tách nền âm thanh](docs/separation.md).
 
-### 2. Live API cho ứng dụng phát video
+### 2. Tự động hóa từ video
+
+```bash
+# Cài ASR; thêm translate nếu cần dịch SRT tiếng Anh
+uv sync --extra asr --extra translate
+
+# Không cần chỉ định SRT: tìm phụ đề phù hợp, hoặc tự chép lời nếu không tìm thấy
+uv run jellydub auto movie.mp4 --out-dir ./dubbed
+
+# Có thể cung cấp SRT tường minh
+uv run jellydub auto movie.mp4 --srt movie.en.srt --out-dir ./dubbed
+```
+
+`auto` tự nhận diện tiếng Anh/Việt, dịch tiếng Anh, tạo thuyết minh và mặc định xuất
+MKV (audio Việt và phụ đề bật/tắt được) cùng SRT rời. MP4 và MP3 chỉ xuất khi thêm `--mp4` / `--audio`. Nếu không
+tìm thấy SRT, lệnh dùng `faster-whisper` (mặc định model `small`; model được tải
+ở lần đầu). Kết quả mặc định chỉ có MKV và SRT; báo cáo JSON nằm trong thư mục cache `reports/`, đường dẫn được in sau khi chạy. Báo cáo kiểm
+tra cấu trúc phụ đề, lỗi đồng bộ và thông tin stream; nó không thể xác nhận
+ngữ nghĩa bản dịch hoặc chất lượng giọng nghe bằng tai. Các cảnh báo trong báo
+cáo cần được xem lại.
+
+### 3. Live API cho ứng dụng phát video
 
 ```bash
 uv run jellydub serve --port 8765
@@ -85,7 +118,7 @@ Client gửi SRT, cập nhật vị trí phát và lấy các đoạn WAV đã t
 
 Xem thêm [hướng dẫn live bằng tiếng Việt](docs/live-dubbing-vi.md). Cài extra `live` nếu cần quảng bá server qua mDNS cho TinyTV.
 
-### 3. HLS cho Jellyfin · Thử nghiệm
+### 4. HLS cho Jellyfin · Thử nghiệm
 
 ```bash
 uv run jellydub stream movie.mkv --srt movie.vi.srt \
@@ -147,3 +180,9 @@ Mã nguồn nằm trong `src/jellydub`; `pipeline.py` điều phối xử lý fi
 Test mặc định bỏ qua nhóm `e2e` và `slow` cần mạng/model. Không commit thông tin đăng nhập, phim, model hay cache.
 
 **Giấy phép:** mã nguồn công bố theo MIT; thư viện, model và dịch vụ có điều khoản riêng. Xem [ghi chú giấy phép bên thứ ba](LICENSES-THIRD-PARTY.md).
+
+### Gemini TTS và đo hiệu năng
+
+Cấu hình Gemini TTS: [hướng dẫn](docs/gemini-tts.md) và [profile mẫu](jellydub.gemini.toml). API key lấy từ biến môi trường, không lưu trong cấu hình.
+
+Kết quả tối ưu và giới hạn: [checkpoint](docs/checkpoints-2026-11-17.md), [kế hoạch và thực thi](docs/next-optimization-execution-2026-11-17.md), [review lỗi](docs/bug-review-2026-11-17.md). GenAI ASR và các thử nghiệm TTS GPU vẫn cần chọn tường minh; chưa đạt mục tiêu video 3 phút trong 40–60 giây.

@@ -1,4 +1,8 @@
 .venv/
+.venv-igpu/
+.venv-igpu-next/
+artifacts/igpu-setup/model-cache/
+artifacts/performance-audit/**/cache/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -6,3 +10,16 @@ __pycache__/
 *.egg-info/
 dist/
 tests/e2e/_out/
+
+# Local runtimes, benchmark outputs and media inputs
+/.venv*/
+/artifacts/
+/videos/
+/dubbed/
+/delivery/
+/demo-reel/
+/validation/
+/kernel.errors.txt
+/.jellydub-cache*/
+/.env
+/.env.*

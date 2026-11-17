@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+import json
+import logging
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
-from .cache import atomic_write_bytes, cache_key, tmp_path_for
+from .cache import atomic_write_bytes, atomic_write_text, cache_key, cache_lock, cached_file_matches, record_cached_file, file_digest, tmp_path_for
 from .config import Config
-from .export import export_mp3, mux_mkv, output_paths
-from .ffmpeg import duration, require_ffmpeg
+from .export import export_mp3, export_mp4, mux_mkv, output_paths
+from .ffmpeg import duration, probe, require_ffmpeg
 from .mix import extract_audio, mix
 from .models import JellyDubError, MixMode
 from .separate import separate_background
@@ -19,6 +21,19 @@ from .tts.synthesize import synthesize_cues
 from .validate import check_audio
 
 Reporter = Callable[[str], None]
+
+
+class _WarningReporter(logging.Handler):
+    def __init__(self, report: Reporter):
+        super().__init__(level=logging.WARNING)
+        self.report = report
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.report(f"Warning: {record.getMessage()}")
+
+
+class _NoSubtitleError(JellyDubError):
+    """No usable sidecar, embedded or online subtitle was found."""
 
 
 def _fingerprint(path: Path) -> tuple:
@@ -34,7 +49,15 @@ def _work_dir(video: Path, srt: Path, config: Config) -> Path:
     # Scheduling does not change speech content. Preserve pre-workers cache keys
     # so existing jobs can resume when concurrency is adjusted.
     cache_settings = asdict(config)
-    for option in ("tts_workers", "subs", "download", "search_online", "providers", "subtitle_credentials_env"):
+    for option in ("tts_device", "translate_device", "asr_python", "tts_model"):
+        if cache_settings[option] is None:
+            cache_settings.pop(option)
+    if not cache_settings["tts_style"]:
+        cache_settings.pop("tts_style")
+    if cache_settings["tts_precision"] == "fp32":
+        cache_settings.pop("tts_precision")
+    for option in ("tts_workers", "tts_blas_threads", "tts_cpu_threads", "pipeline_mode", "cache_dir", "subs", "download", "search_online", "providers",
+                   "subtitle_credentials_env", "asr_model", "asr_device", "audio", "out_dir", "mkv", "mp4", "subtitle_font", "asr_backend", "asr_beam_size"):
         cache_settings.pop(option, None)
     key = cache_key(_fingerprint(video), srt.read_bytes().hex(), cache_settings, refs)
     work = config.cache_dir / f"{video.stem}-{key}"
@@ -84,10 +107,17 @@ def _translated(srt: Path, work: Path, config: Config, report: Reporter) -> Path
     target = work / "translated.vi.srt"
     if not target.is_file() or not target.stat().st_size:
         report(f"Translating subtitles ({config.translator})…")
-        translator = get_translator(name=config.translator, model=config.translator_model, device=config.device)
+        translator = get_translator(**translator_options(config, report=report))
         try:
-            cues = translate_cues(parse_srt(srt), translator, work / "translations",
-                                  on_progress=lambda n, total: report(f"Translation {n}/{total}"))
+            # OPUS caches independent dialogue groups. Contextual LLM backends
+            # deliberately invalidate the affected prompt batch and dependent
+            # translated history when source text changes.
+            shared = config.cache_dir / "translations"
+            lock = config.cache_dir / "translation-locks" / f"{cache_key(translator.cache_id())}.lock"
+            with cache_lock(lock):
+                cues = translate_cues(parse_srt(srt), translator, shared,
+                                      on_progress=lambda n, total: report(f"Translation {n}/{total}"),
+                                      strict_context_cache=True)
             write_srt(cues, target)
         finally:
             translator.close()
@@ -111,46 +141,84 @@ def translate(video: Path, srt: Path, config: Config, report: Reporter = print) 
     return target
 
 
-def _stage(path: Path, action: Callable[[Path], None]) -> None:
-    if path.is_file() and path.stat().st_size:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = tmp_path_for(path)
-    try:
-        action(temporary)
-        if not temporary.is_file() or not temporary.stat().st_size:
-            raise JellyDubError(f"Stage produced no output: {path.name}")
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
+def _stage(path: Path, action: Callable[[Path], None], *, inputs: tuple[Path, ...] = (), settings=None) -> None:
+    signature = cache_key("stage-v2", [file_digest(source) for source in inputs], settings)
+    with cache_lock(path.with_name(path.name + ".lock")):
+        if cached_file_matches(path, signature):
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = tmp_path_for(path)
+        try:
+            action(temporary)
+            if not temporary.is_file() or not temporary.stat().st_size:
+                raise JellyDubError(f"Stage produced no output: {path.name}")
+            temporary.replace(path)
+            record_cached_file(path, signature)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
-def dub(video: Path, srt: Path | None, config: Config, report: Reporter = print) -> dict[str, Path]:
-    config.validate()
-    if not video.is_file():
-        raise JellyDubError(f"Input file does not exist: {video}")
-    require_ffmpeg()
-    original_srt = srt
-    srt, language = _resolve_subtitle(video, srt, config, report)
-    if language is not None:
-        config = replace(config, source_lang=language)
-    _inputs(video, srt, config)
-    work = _work_dir(video, srt, config)
-    outputs = output_paths(video, config.out_dir)
-    for key in ("audio", "mkv"):
-        if any(outputs[key].resolve() == p.resolve() for p in (video, srt)):
-            raise JellyDubError(f"Refusing to overwrite source: {outputs[key]}")
-    translated = _translated(srt, work, config, report)
-    cues = parse_srt(translated)
-    _publish_srt(translated, outputs["srt"], (video, original_srt or srt))
-    total = duration(video)
-    if any(c.start < 0 or c.end > total + 0.05 or c.end < c.start for c in cues):
-        raise JellyDubError("Subtitle timestamps fall outside the video duration")
-    options = {"rate": config.rate, "pitch": config.pitch} if config.tts == "edge" else {"device": "cpu" if config.device == "auto" else config.device,
+def _checked_audio(path: Path, expected: float, work: Path) -> list[str]:
+    """Reuse successful full-decode QC only when content and criteria match."""
+    manifest = work / "qc" / f"{path.name}.json"
+    with cache_lock(manifest.with_name(manifest.name + ".lock")):
+        signature = {"version": 1, "sha256": file_digest(path), "expected_duration": expected}
+        try:
+            saved = json.loads(manifest.read_text())
+            if saved == signature:
+                return []
+        except (OSError, ValueError):
+            pass
+        problems = check_audio(path, expected)
+        if not problems:
+            atomic_write_text(manifest, json.dumps(signature))
+        return problems
+
+
+
+def translator_options(config: Config, report: Reporter | None = None) -> dict:
+    device = config.translate_device or config.device
+    if config.translator == "opus-mt":
+        from .devices import resolve_device
+        device, reason = resolve_device("Translation", device)
+        if report:
+            report(f"Translation device={device}" + (f" ({reason})" if reason else ""))
+    return {"name": config.translator, "model": config.translator_model, "device": device}
+
+
+def tts_options(config: Config, report: Reporter | None = None) -> dict:
+    """Share voice/reference settings between preview and full generation."""
+    if config.tts == "gemini":
+        from .tts.gemini import DEFAULT_MODEL
+        if config.reference:
+            raise JellyDubError("Gemini uses named voices; reference cloning is not supported")
+        options = {"model": config.tts_model or DEFAULT_MODEL, "style": config.tts_style}
+        if config.voice is not None:
+            options["voice"] = config.voice
+        if config.speaker_voices:
+            options["speaker_voices"] = config.speaker_voices
+        if report:
+            report(f"TTS Gemini API model={options['model']} voice={config.voice or 'Charon'}")
+        return options
+    device = config.tts_device or config.device
+    if config.tts == "vieneu":
+        from .devices import resolve_device
+        requested = device
+        device, reason = resolve_device("VieNeu TTS", requested)
+        if report:
+            report(f"TTS requested={requested} resolved={device}" + (f" ({reason})" if reason else ""))
+    options = {"rate": config.rate, "pitch": config.pitch} if config.tts == "edge" else {"device": device,
                                                                                     "cache_dir": config.cache_dir / "voices"}
     if config.voice is not None:
         options["voice"] = config.voice
+    if config.speaker_voices:
+        options["speaker_voices"] = config.speaker_voices
     if config.tts == "vieneu":
+        options.update(blas_threads=config.tts_blas_threads, cpu_threads=config.tts_cpu_threads)
+        if config.tts_precision != "fp32":
+            if device != "cpu":
+                raise JellyDubError("VieNeu int8 currently requires tts_device=cpu")
+            options["precision"] = config.tts_precision
         refs = {}
         unlabelled = []
         for value in config.reference or []:
@@ -165,19 +233,48 @@ def dub(video: Path, srt: Path | None, config: Config, report: Reporter = print)
             options["speaker_refs"] = refs
         if unlabelled:
             options["reference"] = unlabelled[0]
+    return options
+
+
+def dub(video: Path, srt: Path | None, config: Config, report: Reporter = print, *,
+        skip_timing_check: bool = False) -> dict[str, Path]:
+    config.validate()
+    if not video.is_file():
+        raise JellyDubError(f"Input file does not exist: {video}")
+    require_ffmpeg()
+    original_srt = srt
+    srt, language = _resolve_subtitle(video, srt, config, report,
+                                      skip_explicit_sync=skip_timing_check)
+    if language is not None:
+        config = replace(config, source_lang=language)
+    _inputs(video, srt, config)
+    work = _work_dir(video, srt, config)
+    outputs = output_paths(video, config.out_dir)
+    for key in ("audio", "mkv", "mp4"):
+        if any(outputs[key].resolve() == p.resolve() for p in (video, srt)):
+            raise JellyDubError(f"Refusing to overwrite source: {outputs[key]}")
+    translated = _translated(srt, work, config, report)
+    cues = parse_srt(translated)
+    _publish_srt(translated, outputs["srt"], (video, original_srt or srt))
+    total = duration(video)
+    if any(c.start < 0 or c.end > total + 0.05 or c.end < c.start for c in cues):
+        raise JellyDubError("Subtitle timestamps fall outside the video duration")
+    options = tts_options(config, report=report)
     report(f"Synthesizing {len(cues)} subtitle segments ({config.tts})…")
     provider = get_provider(config.tts, **options)
     try:
-        results, failures = synthesize_cues(cues, provider, work / "tts", workers=config.tts_workers,
+        results, failures = synthesize_cues(cues, provider, config.cache_dir / "tts", workers=config.tts_workers,
                                           on_progress=lambda n, count: report(f"TTS {n}/{count}"))
     finally:
+        if getattr(provider, "execution", {}).get("loaded"):
+            report(f"TTS execution: {provider.execution}")
         provider.close()
     if failures:
         for cue, error in failures:
             report(f"Warning: segment {cue.index} failed: {error}")
         raise JellyDubError(f"{len(failures)} TTS segments failed. Re-run the same command to retry; successful segments are cached.")
     report("Aligning speech…")
-    clips = align(cues, results, work / "aligned", max_tempo=config.max_tempo)
+    clips = align(cues, results, config.cache_dir / "aligned", max_tempo=config.max_tempo)
     warning_count = sum(bool(clip.warning) for clip in clips)
     if warning_count:
         report(f"Timing warnings: {warning_count} segment(s)")
@@ -187,12 +284,15 @@ def dub(video: Path, srt: Path | None, config: Config, report: Reporter = print)
     if any(c.start + c.duration > total + 0.02 for c in clips):
         raise JellyDubError("Aligned speech extends beyond the video; shorten the final subtitles and re-run to avoid truncation")
     timeline = work / "timeline.wav"
-    _stage(timeline, lambda p: render_timeline(clips, total, p))
+    _stage(timeline, lambda p: render_timeline(clips, total, p),
+           inputs=tuple(clip.path for clip in clips),
+           settings=(total, [(clip.start, clip.duration, clip.tempo) for clip in clips]))
     mode = MixMode(config.mix)
     original = background = None
     if mode != MixMode.DUB_ONLY:
         original = work / "original.wav"
-        _stage(original, lambda p: extract_audio(video, p, stream_index=config.audio_stream))
+        _stage(original, lambda p: extract_audio(video, p, stream_index=config.audio_stream),
+               inputs=(video,), settings=config.audio_stream)
     if mode == MixMode.REPLACE:
         report("Separating original dialogue locally…")
         try:
@@ -203,23 +303,259 @@ def dub(video: Path, srt: Path | None, config: Config, report: Reporter = print)
             report(f"Warning: separation failed; using voiceover: {exc}")
             mode = MixMode.VOICEOVER
     mixed = work / f"mixed-{mode.value}.wav"
-    _stage(mixed, lambda p: mix(mode, timeline, p, original_wav=original, background_wav=background))
-    problems = check_audio(mixed, total)
+    _stage(mixed, lambda p: mix(mode, timeline, p, original_wav=original, background_wav=background),
+           inputs=tuple(path for path in (timeline, original, background) if path is not None),
+           settings=mode.value)
+    problems = _checked_audio(mixed, total, work)
     if problems:
         raise JellyDubError("Mixed audio validation failed: " + "; ".join(problems))
-    # Export from the keyed work directory on every run: an existing user output may be stale.
-    encoded = work / "export.mp3"
-    _stage(encoded, lambda p: export_mp3(mixed, p))
-    problems = check_audio(encoded, total)
-    if problems:
-        raise JellyDubError("Export validation failed: " + "; ".join(problems))
-    _copy_output(encoded, outputs["audio"])
+    # Encode external MP3 only on explicit request. Mux from the lossless mix.
+    if config.audio:
+        encoded = work / "export.mp3"
+        _stage(encoded, lambda p: export_mp3(mixed, p), inputs=(mixed,))
+        problems = _checked_audio(encoded, total, work)
+        if problems:
+            raise JellyDubError("Export validation failed: " + "; ".join(problems))
+        _copy_output(encoded, outputs["audio"])
     if config.mkv:
-        muxed = work / "export.mkv"
-        _stage(muxed, lambda p: mux_mkv(video, encoded, p))
+        muxed = work / "export-direct.mkv"
+        _stage(muxed, lambda p: mux_mkv(video, mixed, outputs["srt"], p),
+               inputs=(video, mixed, outputs["srt"]), settings="mkv-v3-vietnamese-defaults")
         _copy_output(muxed, outputs["mkv"])
-    report(f"Done: {outputs['audio']}")
-    return {k: v for k, v in outputs.items() if k != "mkv" or config.mkv}
+    if config.mp4:
+        rendered = work / f"export-direct-{cache_key(config.subtitle_font)}.mp4"
+        _stage(rendered, lambda p: export_mp4(
+            video, mixed, outputs["srt"], p, subtitle_font=config.subtitle_font),
+               inputs=(video, mixed, outputs["srt"]), settings=config.subtitle_font)
+        _copy_output(rendered, outputs["mp4"])
+    selected_outputs = {k: v for k, v in outputs.items()
+                        if k == "srt" or (k == "audio" and config.audio)
+                        or (k == "mkv" and config.mkv) or (k == "mp4" and config.mp4)}
+    primary = "mkv" if config.mkv else "mp4" if config.mp4 else "audio" if config.audio else "srt"
+    report(f"Done: {outputs[primary]}")
+    return selected_outputs
+
+
+def auto(video: Path, srt: Path | None, config: Config, report: Reporter = print) -> dict[str, Path]:
+    """Find or transcribe subtitles, export MKV/SRT by default, and retain QC internally."""
+    config = replace(config, subs="auto")
+    config.validate()
+    if not video.is_file():
+        raise JellyDubError(f"Input file does not exist: {video}")
+    require_ffmpeg()
+    out_dir = config.out_dir if config.out_dir is not None else video.parent
+    report_path = config.cache_dir / "reports" / f"{video.stem}-{cache_key(_fingerprint(video), asdict(config), str(srt))}.json"
+    if report_path.resolve() == video.resolve() or (srt is not None and report_path.resolve() == srt.resolve()):
+        raise JellyDubError(f"Refusing to overwrite source file: {report_path}")
+
+    messages = []
+
+    def emit(message: str) -> None:
+        messages.append(message)
+        report(message)
+
+    selected = None
+    source_language = None
+    transcribed = False
+    try:
+        try:
+            selected, source_language = _resolve_subtitle(video, srt, config, emit)
+        except _NoSubtitleError:
+            emit(f"No usable subtitle found; transcribing ({config.asr_model}, "
+                 f"backend={config.asr_backend}, device={config.asr_device}, beam={config.asr_beam_size})…")
+            if config.pipeline_mode == "overlap":
+                from .progressive import ProgressivePrefetch
+                prefetch = ProgressivePrefetch(config, emit)
+                try:
+                    selected, source_language = _asr_subtitle(video, config, emit, on_region=prefetch.submit)
+                    prefetch.finish()
+                finally:
+                    prefetch.close()
+            else:
+                selected, source_language = _asr_subtitle(video, config, emit)
+            transcribed = True
+        if config.source_lang != "auto":
+            source_language = config.source_lang
+        elif source_language is None:
+            source_language = detect_source_language(selected)[0]
+        run_config = replace(config, source_lang=source_language, mkv=True)
+        warning_handler = _WarningReporter(emit)
+        logger = logging.getLogger()
+        logger.addHandler(warning_handler)
+        try:
+            try:
+                outputs = dub(video, selected, run_config, report=emit, skip_timing_check=True)
+            except JellyDubError as exc:
+                if "TTS segments failed." not in str(exc):
+                    raise
+                emit("Retrying failed TTS segments once; successful cached segments will be reused…")
+                outputs = dub(video, selected, run_config, report=emit, skip_timing_check=True)
+        finally:
+            logger.removeHandler(warning_handler)
+        video_duration = duration(video)
+        subtitle_qc = _subtitle_quality(outputs["srt"], video_duration)
+        warnings = _pipeline_warnings(messages, asr=transcribed)
+        media = {}
+        for key, path in outputs.items():
+            item = {"path": str(path), "bytes": path.stat().st_size}
+            if path.suffix.lower() in {".mp3", ".mkv", ".mp4"}:
+                details = probe(path)
+                item["duration_seconds"] = float(details["format"]["duration"])
+                item["streams"] = [
+                    {
+                        "type": stream.get("codec_type"),
+                        "codec": stream.get("codec_name"),
+                        "language": stream.get("tags", {}).get("language"),
+                        "title": stream.get("tags", {}).get("title"),
+                    }
+                    for stream in details.get("streams", [])
+                ]
+            media[key] = item
+        _validate_auto_exports(media, video_duration)
+        quality_status = ("needs_review" if subtitle_qc["issues"] or warnings or subtitle_qc["score"] < 0.75
+                          else "automated_checks_passed")
+        report_data = {
+            "status": "completed",
+            "quality_status": quality_status,
+            "video": str(video),
+            "subtitle": str(selected),
+            "subtitle_source": "asr" if transcribed else ("explicit" if srt is not None else "discovered"),
+            "asr_execution": json.loads(selected.with_suffix(".json").read_text()).get("execution", {}) if transcribed else None,
+            "subtitle_timing": "asr" if transcribed else (
+                "unverified" if any("unverified" in warning.lower() for warning in warnings) else "subtitle"),
+            "source_language": source_language,
+            "translation": "performed" if source_language == "en" else "not_required",
+            "semantic_translation_verified": False,
+            "subtitle_qc": subtitle_qc,
+            "pipeline_warnings": warnings,
+            "outputs": media,
+            "note": "Automated checks cannot verify translation meaning or perceived voice quality.",
+        }
+    except Exception as exc:
+        report_data = {
+            "status": "failed",
+            "video": str(video),
+            "subtitle": str(selected) if selected else None,
+            "subtitle_source": "asr" if transcribed else ("explicit" if srt is not None else "discovered"),
+            "source_language": source_language,
+            "error": str(exc),
+            "pipeline_warnings": _pipeline_warnings(messages, asr=transcribed),
+        }
+        atomic_write_text(report_path, json.dumps(report_data, ensure_ascii=False, indent=2) + "\n")
+        raise
+
+    atomic_write_text(report_path, json.dumps(report_data, ensure_ascii=False, indent=2) + "\n")
+    emit(f"Automated QC report: {report_path}")
+    return {**outputs, "report": report_path}
+
+
+def _asr_subtitle(video: Path, config: Config, report: Reporter, *, on_region=None) -> tuple[Path, str]:
+    native_signature = []
+    if config.asr_backend == "genai":
+        from .asr_native import runtime_signature
+        native_signature = [runtime_signature(config.asr_python)]
+    key = cache_key("asr-v4-bounded", _fingerprint(video), config.asr_model, config.source_lang,
+                    config.asr_backend, config.asr_device, config.asr_beam_size, *native_signature)
+    folder = config.cache_dir / "transcriptions"
+    subtitle = folder / f"{video.stem}-{key}.srt"
+    metadata = folder / f"{video.stem}-{key}.json"
+    if subtitle.is_file() and metadata.is_file():
+        try:
+            language = json.loads(metadata.read_text(encoding="utf-8"))["language"]
+            if language in {"en", "vi"}:
+                cached = parse_srt(subtitle)
+                if on_region:
+                    on_region(cached)
+                report(f"Reusing cached ASR subtitles ({language})")
+                return subtitle, language
+        except (OSError, ValueError, KeyError, TypeError, JellyDubError):
+            pass
+
+    execution = {}
+    cues, language = transcribe_video(
+        video,
+        model_name=config.asr_model,
+        device=config.asr_device,
+        backend=config.asr_backend,
+        beam_size=config.asr_beam_size,
+        report=report, details=execution,
+        cache_dir=config.cache_dir / "asr-models",
+        language=None if config.source_lang == "auto" else config.source_lang,
+        **({"python_executable": config.asr_python} if config.asr_backend == "genai" else {}),
+        **({"on_region": on_region} if on_region is not None else {}),
+    )
+    write_srt(cues, subtitle)
+    atomic_write_text(metadata, json.dumps({"language": language, "execution": execution}, ensure_ascii=False))
+    report(f"ASR created {len(cues)} subtitle cues ({language})")
+    return subtitle, language
+
+
+def _pipeline_warnings(messages: list[str], *, asr: bool = False) -> list[str]:
+    warnings = []
+    for message in messages:
+        normalized = message.lower()
+        relevant = (
+            normalized.startswith(("warning:", "timing warnings:", "rejected "))
+            or "offset unverified" in normalized
+            or normalized.startswith("no sufficiently complete english reference")
+            or normalized.startswith("no english timing reference")
+        )
+        if relevant and not (asr and "english timing reference" in normalized):
+            warnings.append(message)
+    return warnings
+
+
+def _validate_auto_exports(media: dict[str, dict[str, Any]], video_duration: float) -> None:
+    required = {"srt", "mkv"}
+    missing = required - media.keys()
+    if missing:
+        raise JellyDubError(f"Automated export is missing: {', '.join(sorted(missing))}")
+    mkv_streams = media["mkv"]["streams"]
+    if not any(stream["type"] == "audio" and stream["language"] == "vie" for stream in mkv_streams):
+        raise JellyDubError("MKV export is missing its Vietnamese audio track")
+    if not any(stream["type"] == "subtitle" and stream["language"] == "vie" for stream in mkv_streams):
+        raise JellyDubError("MKV export is missing its Vietnamese subtitle track")
+    if "mp4" in media:
+        mp4_streams = media["mp4"]["streams"]
+        if not any(stream["type"] == "video" and stream["codec"] == "h264" for stream in mp4_streams):
+            raise JellyDubError("MP4 export is missing its H.264 video stream")
+        if not any(stream["type"] == "audio" and stream["codec"] == "aac" and
+                   stream["language"] == "vie" for stream in mp4_streams):
+            raise JellyDubError("MP4 export is missing its Vietnamese AAC audio stream")
+    for key in ("audio", "mkv", "mp4"):
+        if key not in media:
+            continue
+        delta = abs(media[key]["duration_seconds"] - video_duration)
+        if delta > max(1.0, video_duration * 0.01):
+            raise JellyDubError(f"{key.upper()} duration differs from the source by {delta:.2f} seconds")
+
+
+def _subtitle_quality(path: Path, video_duration: float) -> dict:
+    import math
+
+    cues = parse_srt(path)
+    issues = []
+    assessment = assess_subtitle(cues, lang="vi")
+    issues.extend({"type": "content_quality", "detail": item} for item in assessment.issues)
+    score = float(assessment.score)
+    if not math.isfinite(score):
+        issues.append({"type": "invalid_quality_score"})
+        score = 0.0
+    previous = None
+    for cue in cues:
+        if not cue.text.strip():
+            issues.append({"cue": cue.index, "type": "empty_text"})
+        if cue.end > video_duration + 0.05:
+            issues.append({"cue": cue.index, "type": "beyond_video"})
+        if len(cue.text) > 60:
+            issues.append({"cue": cue.index, "type": "long_text", "characters": len(cue.text)})
+        if cue.duration > 0 and len(cue.text) / cue.duration > 24:
+            issues.append({"cue": cue.index, "type": "fast_reading_rate",
+                           "characters_per_second": round(len(cue.text) / cue.duration, 1)})
+        if previous is not None and cue.start < previous.end - 0.1:
+            issues.append({"cue": cue.index, "type": "overlap", "with_cue": previous.index})
+        previous = cue
+    return {"cue_count": len(cues), "score": round(score, 3), "issues": issues}
 
 
 def _copy_output(source: Path, target: Path) -> None:
@@ -251,6 +587,11 @@ def download_subtitles(*args, **kwargs):
     return stage(*args, **kwargs)
 
 
+def transcribe_video(*args, **kwargs):
+    from .transcribe import transcribe_video as stage
+    return stage(*args, **kwargs)
+
+
 def estimate_sync(*args, **kwargs):
     from .subsync import estimate_sync as stage
     return stage(*args, **kwargs)
@@ -267,8 +608,10 @@ def _source_dir(video: Path, config: Config) -> Path:
     return folder
 
 
-def _local_candidates(video: Path, language: str, work: Path, report: Reporter):
-    candidates = list(find_local_subtitles(video, language))
+def _local_candidates(video: Path, language: str, work: Path, report: Reporter,
+                      search_dirs: list[Path] | None = None):
+    candidates = (list(find_local_subtitles(video, language, search_dirs=search_dirs))
+                  if search_dirs else list(find_local_subtitles(video, language)))
     try:
         candidates.extend(extract_embedded_subtitles(video, language, work / "embedded"))
     except JellyDubError:
@@ -284,12 +627,20 @@ class _ReferenceCues(list):
         self.alternatives = alternatives
 
 
-def _english_reference(video: Path, work: Path, report: Reporter):
+def _english_reference(video: Path, work: Path, report: Reporter, *,
+                       search_dirs: list[Path] | None = None, paired_subtitle: Path | None = None):
     references = []
-    for candidate in _local_candidates(video, "en", work, report):
+    candidates = (_local_candidates(video, "en", work, report, search_dirs=search_dirs)
+                  if search_dirs else _local_candidates(video, "en", work, report))
+    for candidate in candidates:
         if (getattr(candidate, "metadata", {}) or {}).get("forced", False):
             report(f"Skipping forced English sync reference: {candidate.path}")
             continue
+        if (paired_subtitle is not None
+                and candidate.path.parent.resolve() == paired_subtitle.parent.resolve()
+                and _subtitle_base(candidate.path) == _subtitle_base(paired_subtitle)):
+            candidate.score = 1.0
+            candidate.note = "matching language-paired subtitle"
         if candidate.score < 0.5:
             continue
         try:
@@ -306,6 +657,14 @@ def _english_reference(video: Path, work: Path, report: Reporter):
         return _ReferenceCues([(candidate.path, cues) for candidate, cues in references])
     report("No English timing reference; subtitle synchronization is unverified")
     return None
+
+
+def _subtitle_base(path: Path) -> str:
+    stem = path.stem.casefold()
+    for suffix in (".english", ".eng", ".en", ".vietnamese", ".vie", ".vi"):
+        if stem.endswith(suffix):
+            return stem[:-len(suffix)]
+    return stem
 
 
 def _reference_for_candidate(reference, cues, report: Reporter):
@@ -446,7 +805,8 @@ def _download_candidates(video: Path, language: str, work: Path, config: Config,
         return []
 
 
-def _resolve_subtitle(video: Path, explicit: Path | None, config: Config, report: Reporter):
+def _resolve_subtitle(video: Path, explicit: Path | None, config: Config, report: Reporter, *,
+                      skip_explicit_sync: bool = False):
     if explicit is not None:
         if not explicit.is_file():
             raise JellyDubError(f"Input file does not exist: {explicit}")
@@ -454,9 +814,14 @@ def _resolve_subtitle(video: Path, explicit: Path | None, config: Config, report
         language = config.source_lang if config.source_lang != "auto" else detect_source_language(explicit)[0]
         if language != "vi":
             return explicit, None
+        if skip_explicit_sync:
+            report("Using preselected subtitle timing; skipping redundant synchronization checks")
+            return explicit, "vi"
         from types import SimpleNamespace
         work = _source_dir(video, config)
-        reference = _english_reference(video, work, report)
+        sibling_dirs = ([explicit.parent] if explicit.parent.resolve() != video.parent.resolve() else None)
+        reference = _english_reference(video, work, report, search_dirs=sibling_dirs,
+                                       paired_subtitle=explicit)
         chosen = _best_candidate([SimpleNamespace(path=explicit, origin="explicit", language="vi", score=1.0,
                                                   note="user supplied")], reference, work, report)
         if chosen is None:
@@ -482,7 +847,7 @@ def _resolve_subtitle(video: Path, explicit: Path | None, config: Config, report
                 return candidate.path, "en"
         except JellyDubError:
             continue
-    raise JellyDubError("No suitable subtitles found. Supply --srt EN.srt or VI.srt, or enable subtitle downloads")
+    raise _NoSubtitleError("No suitable subtitles found. Supply --srt EN.srt or VI.srt, or enable subtitle downloads")
 
 
 def subs(video: Path, config: Config, *, lang: str = "vi", force: bool = False,

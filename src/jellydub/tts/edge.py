@@ -12,17 +12,29 @@ from .base import TTSError, TTSProvider
 class EdgeTTS(TTSProvider):
     name = "edge"
     max_concurrency = 8
+    is_remote = True
 
-    def __init__(self, voice="vi-VN-HoaiMyNeural", rate="+0%", pitch="+0Hz", volume="+0%"):
+    def __init__(self, voice="vi-VN-HoaiMyNeural", rate="+0%", pitch="+0Hz", volume="+0%", speaker_voices=None):
         self.voice, self.rate, self.pitch, self.volume = voice, rate, pitch, volume
+        self.speaker_voices = dict(speaker_voices or {})
 
     def cache_id(self):
+        if self.speaker_voices:
+            return "edge:speakers:" + cache_key(self.voice, self.rate, self.pitch, self.volume, self.speaker_voices)
         return "edge:" + cache_key(self.voice, self.rate, self.pitch, self.volume)
+
+    def cache_id_for(self, speaker):
+        return "edge:" + cache_key(self.speaker_voices.get(speaker, self.voice),
+                                    self.rate, self.pitch, self.volume)
+
+    def legacy_cache_ids_for(self, speaker):
+        return [self.cache_id()]
 
     def synthesize(self, text: str, out_path: Path, speaker=None):
         async def generate():
             import edge_tts
-            await edge_tts.Communicate(text, self.voice, rate=self.rate,
+            voice = self.speaker_voices.get(speaker, self.voice)
+            await edge_tts.Communicate(text, voice, rate=self.rate,
                                        pitch=self.pitch, volume=self.volume).save(str(out_path))
         try:
             try:

@@ -1,0 +1,11 @@
+[jellydub]
+tts = "gemini"
+tts_model = "gemini-3.8-flash-lite-tts"
+voice = "Charon"
+tts_style = "Speak natural Vietnamese, clearly and expressively. Read the transcript faithfully."
+tts_workers = 2
+mix = "voiceover"
+mkv = true
+mp4 = false
+cache_dir = ".jellydub-cache-gemini"
+out_dir = "dubbed/gemini"

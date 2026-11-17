@@ -1,3 +1,5 @@
+import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,6 +10,25 @@ from jellydub.config import Config
 from jellydub.models import Cue, JellyDubError, PlacedClip, SynthResult
 
 
+def _auto_probe(path):
+    streams = {
+        '.mp3': [{'codec_type': 'audio', 'codec_name': 'mp3', 'tags': {}}],
+        '.mkv': [
+            {'codec_type': 'video', 'codec_name': 'h264', 'tags': {}},
+            {'codec_type': 'audio', 'codec_name': 'aac', 'tags': {}},
+            {'codec_type': 'audio', 'codec_name': 'aac',
+             'tags': {'language': 'vie', 'title': 'Tiếng Việt (AI Dub)'}},
+            {'codec_type': 'subtitle', 'codec_name': 'subrip',
+             'tags': {'language': 'vie', 'title': 'Phụ đề tiếng Việt'}},
+        ],
+        '.mp4': [
+            {'codec_type': 'video', 'codec_name': 'h264', 'tags': {}},
+            {'codec_type': 'audio', 'codec_name': 'aac', 'tags': {'language': 'vie'}},
+        ],
+    }
+    return {'format': {'duration': '15'}, 'streams': streams[path.suffix]}
+
+
 @pytest.fixture
 def stages(monkeypatch, tmp_path):
     events = []
@@ -15,6 +36,7 @@ def stages(monkeypatch, tmp_path):
     video.write_bytes(b'video')
     srt.write_text('Vietnamese')
     cue = Cue(1, 1, 2, 'Xin chào')
+    (tmp_path / 'clip.wav').write_bytes(b'fake speech')
     def output(name):
         def write(*args, **kwargs):
             events.append(name)
@@ -32,10 +54,11 @@ def stages(monkeypatch, tmp_path):
     monkeypatch.setattr(p, 'parse_srt', lambda f: [cue])
     monkeypatch.setattr(p, 'write_srt', lambda cues, f: f.write_text('translated'))
     monkeypatch.setattr(p, 'output_paths', lambda v, d: {k: d / (v.stem + ext) for k, ext in
-                                                       [('srt', '.vi.srt'), ('audio', '.AI-Dub.vi.mp3'), ('mkv', '.AI-Dub.vi.mkv')]})
+                                                       [('srt', '.vi.srt'), ('audio', '.AI-Dub.vi.mp3'),
+                                                        ('mkv', '.AI-Dub.vi.mkv'), ('mp4', '.AI-Dub.vi.mp4')]})
     def provider(*args, **kwargs):
         events.append(('provider', kwargs))
-        return SimpleNamespace(close=lambda: events.append('tts-close'))
+        return SimpleNamespace(cache_id=lambda: 'fake', close=lambda: events.append('tts-close'))
     monkeypatch.setattr(p, 'get_provider', provider)
     monkeypatch.setattr(p, 'synthesize_cues', lambda *a, **kw: ([SynthResult(1, tmp_path / 'clip.wav', 1)], []))
     monkeypatch.setattr(p, 'align', lambda *a, **kw: [PlacedClip(1, tmp_path / 'clip.wav', 1, 1)])
@@ -43,6 +66,7 @@ def stages(monkeypatch, tmp_path):
     monkeypatch.setattr(p, 'extract_audio', lambda v, f, **kw: output('extract')(f))
     monkeypatch.setattr(p, 'mix', lambda mode, dub, f, **kw: output('mix-' + mode.value)(f))
     monkeypatch.setattr(p, 'export_mp3', output('export'))
+    monkeypatch.setattr(p, 'export_mp4', output('mp4'))
     monkeypatch.setattr(p, 'mux_mkv', output('mux'))
     monkeypatch.setattr(p, 'check_audio', lambda *a: [])
     config = Config(source_lang='vi', out_dir=tmp_path / 'out', cache_dir=tmp_path / 'cache')
@@ -52,11 +76,13 @@ def stages(monkeypatch, tmp_path):
 def test_resume_and_out_dir(stages):
     video, srt, config, events = stages
     config.mkv = True
+    config.mp4 = True
+    config.audio = True
     outputs = p.dub(video, srt, config, report=lambda s: None)
     assert all(path.is_file() and path.parent == config.out_dir for path in outputs.values())
     assert video.read_bytes() == b'video' and srt.read_text() == 'Vietnamese'
     p.dub(video, srt, config, report=lambda s: None)
-    assert events.count('render') == events.count('export') == events.count('mux') == 1
+    assert events.count('render') == events.count('export') == events.count('mux') == events.count('mp4') == 1
     srt.write_text('edited')
     p.dub(video, srt, config, report=lambda s: None)
     assert events.count('render') == 2
@@ -65,7 +91,7 @@ def test_resume_and_out_dir(stages):
 def test_translation_closes_before_tts(stages, monkeypatch):
     video, srt, config, events = stages
     config.source_lang = 'en'
-    monkeypatch.setattr(p, 'get_translator', lambda **kw: SimpleNamespace(close=lambda: events.append('translate-close')))
+    monkeypatch.setattr(p, 'get_translator', lambda **kw: SimpleNamespace(cache_id=lambda: 'fake', close=lambda: events.append('translate-close')))
     monkeypatch.setattr(p, 'translate_cues', lambda cues, *a, **kw: cues)
     p.dub(video, srt, config, report=lambda s: None)
     assert events.index('translate-close') < next(i for i, v in enumerate(events) if isinstance(v, tuple))
@@ -105,7 +131,7 @@ def test_invalid_audio_not_published(stages, monkeypatch):
 def test_translation_exception_releases_model(stages, monkeypatch):
     video, srt, config, events = stages
     config.source_lang = 'en'
-    monkeypatch.setattr(p, 'get_translator', lambda **kw: SimpleNamespace(close=lambda: events.append('translate-close')))
+    monkeypatch.setattr(p, 'get_translator', lambda **kw: SimpleNamespace(cache_id=lambda: 'fake', close=lambda: events.append('translate-close')))
     def fail(*args, **kw):
         raise JellyDubError('translation failure')
     monkeypatch.setattr(p, 'translate_cues', fail)
@@ -130,7 +156,7 @@ def test_partial_stage_is_not_reused(tmp_path):
         raise JellyDubError('interrupted')
     with pytest.raises(JellyDubError):
         p._stage(path, fail)
-    assert not path.exists() and not list(tmp_path.iterdir())
+    assert not path.exists() and not list(tmp_path.glob('*.part*'))
 
 
 @pytest.mark.parametrize('name,text,expected', [
@@ -207,11 +233,8 @@ def test_workers_preserve_existing_cache_key(stages):
     from dataclasses import asdict
     from jellydub.cache import cache_key
     video, srt, config, _ = stages
-    old_settings = asdict(config)
-    for option in ('tts_workers', 'subs', 'download', 'search_online', 'providers', 'subtitle_credentials_env'):
-        old_settings.pop(option)
-    old_key = cache_key(p._fingerprint(video), srt.read_bytes().hex(), old_settings, [])
-    expected = config.cache_dir / f'{video.stem}-{old_key}'
+    expected = p._work_dir(video, srt, config)
+    config.asr_model = 'large'
     assert p._work_dir(video, srt, config) == expected
     config.tts_workers = 1
     assert p._work_dir(video, srt, config) == expected
@@ -222,6 +245,7 @@ def test_workers_preserve_existing_cache_key(stages):
 @pytest.mark.parametrize('command', ['translate', 'dub'])
 @pytest.mark.parametrize('name,model', [('opus-mt', None), ('agy', None), ('agy', 'custom-model')])
 def test_translator_selection_forwarded(stages, monkeypatch, command, name, model):
+    monkeypatch.setattr('jellydub.devices.torch_cuda_available', lambda: False)
     video, srt, config, events = stages
     config.source_lang = 'en'
     config.translator = name
@@ -229,11 +253,12 @@ def test_translator_selection_forwarded(stages, monkeypatch, command, name, mode
     seen = []
     def factory(**options):
         seen.append(options)
-        return SimpleNamespace(close=lambda: events.append('translate-close'))
+        return SimpleNamespace(cache_id=lambda: 'fake', close=lambda: events.append('translate-close'))
     monkeypatch.setattr(p, 'get_translator', factory)
     monkeypatch.setattr(p, 'translate_cues', lambda cues, *a, **kw: cues)
     getattr(p, command)(video, srt, config, report=lambda s: None)
-    assert seen == [{'name': name, 'model': model, 'device': config.device}]
+    assert seen == [{'name': name, 'model': model,
+                     'device': 'cpu' if name == 'opus-mt' else config.device}]
     assert events.count('translate-close') == 1
 
 
@@ -271,7 +296,7 @@ def test_gemini_factory_and_vietnamese_skip(stages, monkeypatch, command, langua
     seen = []
     def factory(**options):
         seen.append(options)
-        return SimpleNamespace(close=lambda: events.append('gemini-close'))
+        return SimpleNamespace(cache_id=lambda: 'fake', close=lambda: events.append('gemini-close'))
     monkeypatch.setattr(p, 'get_translator', factory)
     monkeypatch.setattr(p, 'translate_cues', lambda cues, *a, **kw: cues)
     getattr(p, command)(video, srt, config, report=lambda message: None)
@@ -292,7 +317,7 @@ def test_gemini_credentials_not_used_in_pipeline_state(stages, monkeypatch):
     config.source_lang = 'en'
     def factory(**options):
         seen.append(options)
-        return SimpleNamespace(close=lambda: None)
+        return SimpleNamespace(cache_id=lambda: 'fake', close=lambda: None)
     monkeypatch.setattr(p, 'get_translator', factory)
     monkeypatch.setattr(p, 'translate_cues', lambda cues, *a, **kw: cues)
     # Synthetic sentinels only: never inspect or print any actual credentials.
@@ -359,6 +384,33 @@ def test_reject_explicit_vi_with_bad_sync(subtitle_sources, monkeypatch, ratio, 
         p.dub(video, vi.path, config, report=lambda s: None)
 
 
+def test_explicit_vi_uses_language_paired_srt_from_its_folder(stages, monkeypatch, tmp_path):
+    video, _, config, _ = stages
+    subtitle_dir = tmp_path / 'subtitle-inputs'
+    vi = subtitle_dir / 'vendor-quotations.vi.srt'
+    en = subtitle_dir / 'vendor-quotations.en.srt'
+    subtitle_dir.mkdir()
+    vi.write_text('Vietnamese')
+    en.write_text('English')
+    reference = SimpleNamespace(path=en, origin='sidecar', language='en', score=0.1, note='weak title match')
+    monkeypatch.setattr(p, 'find_local_subtitles',
+                        lambda v, lang, **kw: [reference] if lang == 'en' and kw.get('search_dirs') == [subtitle_dir] else [])
+    monkeypatch.setattr(p, 'extract_embedded_subtitles', lambda *a, **kw: [])
+    monkeypatch.setattr(p, 'parse_srt', lambda path: [Cue(1, 0, 1, 'subtitle')])
+    monkeypatch.setattr(p, 'assess_subtitle', lambda *a, **kw: SimpleNamespace(score=0.95, issues=[], stats={}))
+    monkeypatch.setattr(p, 'estimate_sync', lambda *a: SimpleNamespace(
+        offset=0.02, scale=1., matched_ratio=0.95, residual=0.02))
+    monkeypatch.setattr(p, 'apply_sync', lambda cues, result: cues)
+    monkeypatch.setattr(p, 'strip_junk', lambda cues: cues)
+    messages = []
+
+    chosen, language = p._resolve_subtitle(video, vi, config, messages.append)
+
+    assert chosen == vi and language == 'vi'
+    assert reference.score == 1.0
+    assert any('Sync reference:' in message and str(en) in message for message in messages)
+
+
 def test_download_vi_precedes_translation(subtitle_sources, monkeypatch):
     import importlib.util
     video, config, vi, en, _ = subtitle_sources
@@ -382,7 +434,7 @@ def test_english_translation_fallback(subtitle_sources, monkeypatch, mode, downl
     monkeypatch.setattr(p, 'find_local_subtitles', lambda v, lang: [en] if lang == 'en' else [])
     monkeypatch.setattr(importlib.util, 'find_spec', lambda name: object() if extra else None)
     monkeypatch.setattr(p, 'download_subtitles', lambda *a, **kw: pytest.fail('downloads should be skipped'))
-    monkeypatch.setattr(p, 'get_translator', lambda **kw: SimpleNamespace(close=lambda: events.append('translator-closed')))
+    monkeypatch.setattr(p, 'get_translator', lambda **kw: SimpleNamespace(cache_id=lambda: 'fake', close=lambda: events.append('translator-closed')))
     monkeypatch.setattr(p, 'translate_cues', lambda cues, *a, **kw: cues)
     p.dub(video, None, config, report=lambda s: None)
     assert 'translator-closed' in events
@@ -455,7 +507,7 @@ def test_explicit_english_has_priority(stages, monkeypatch):
     video, srt, config, events = stages
     config.source_lang = 'en'
     monkeypatch.setattr(p, 'find_local_subtitles', lambda *a: pytest.fail('explicit English is authoritative'))
-    monkeypatch.setattr(p, 'get_translator', lambda **kw: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(p, 'get_translator', lambda **kw: SimpleNamespace(cache_id=lambda: 'fake', close=lambda: None))
     monkeypatch.setattr(p, 'translate_cues', lambda cues, *a, **kw: cues)
     p.dub(video, srt, config, report=lambda s: None)
 
@@ -643,3 +695,159 @@ def test_search_online_does_not_override_no_download(subtitle_sources, monkeypat
     config.search_online, config.download = True, False
     monkeypatch.setattr(p, 'download_subtitles', lambda *a, **kw: pytest.fail('no-download remains authoritative'))
     p.subs(video, config, report=lambda s: None)
+
+
+@pytest.mark.parametrize('language,translation', [('en', 'performed'), ('vi', 'not_required')])
+def test_auto_exports_both_formats_and_reports_discovered_subtitles(stages, monkeypatch, language, translation):
+    video, srt, config, _ = stages
+    config.source_lang = 'auto'
+    config.mix = 'voiceover'
+    config.mp4 = True
+    config.audio = True
+    monkeypatch.setattr(p, '_resolve_subtitle', lambda *a, **kw: (srt, language))
+    monkeypatch.setattr(p, 'probe', _auto_probe)
+    called = []
+
+    def fake_dub(source, subtitle, settings, report, **kwargs):
+        called.append((subtitle, settings, kwargs.get('skip_timing_check', False)))
+        if language == 'en':
+            logging.getLogger().warning('Synthetic translation warning')
+        outputs = p.output_paths(source, settings.out_dir)
+        for path in outputs.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'output')
+        return outputs
+
+    monkeypatch.setattr(p, 'dub', fake_dub)
+    outputs = p.auto(video, None, config, report=lambda message: None)
+
+    assert outputs['mkv'].is_file() and outputs['mp4'].is_file()
+    assert outputs['report'].is_file()
+    assert called[0][0] == srt and called[0][2]
+    assert called[0][1].source_lang == language
+    assert called[0][1].mkv and called[0][1].mp4 and called[0][1].mix == 'voiceover'
+    report_data = json.loads(outputs['report'].read_text())
+    assert report_data['status'] == 'completed'
+    assert report_data['subtitle_source'] == 'discovered'
+    assert report_data['translation'] == translation
+    assert any(stream['language'] == 'vie' for stream in report_data['outputs']['mp4']['streams'])
+    if language == 'en':
+        assert any('Synthetic translation warning' in warning for warning in report_data['pipeline_warnings'])
+    else:
+        assert not report_data['pipeline_warnings']
+
+
+def test_auto_transcribes_when_no_subtitle_is_usable(stages, monkeypatch):
+    video, _, config, _ = stages
+    config.mix = 'voiceover'
+
+    def missing(*args, **kwargs):
+        raise p._NoSubtitleError('none found')
+
+    monkeypatch.setattr(p, '_resolve_subtitle', missing)
+    monkeypatch.setattr(p, 'transcribe_video', lambda *args, **kwargs: ([Cue(1, 0, 2, 'Xin chào')], 'vi'))
+    def write_transcription(cues, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('transcribed')
+    monkeypatch.setattr(p, 'write_srt', write_transcription)
+    monkeypatch.setattr(p, 'probe', _auto_probe)
+    called = []
+
+    def fake_dub(source, subtitle, settings, report, **kwargs):
+        called.append((subtitle, settings, kwargs.get('skip_timing_check', False)))
+        outputs = p.output_paths(source, settings.out_dir)
+        for path in outputs.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'output')
+        return outputs
+
+    monkeypatch.setattr(p, 'dub', fake_dub)
+    outputs = p.auto(video, None, config, report=lambda message: None)
+
+    assert called[0][0].is_file() and called[0][2]
+    assert called[0][1].source_lang == 'vi'
+    report_data = json.loads(outputs['report'].read_text())
+    assert report_data['subtitle_source'] == 'asr'
+    assert report_data['source_language'] == 'vi'
+    assert report_data['status'] == 'completed'
+
+
+def test_auto_subtitle_qc_marks_overlap_and_long_text(stages, monkeypatch, tmp_path):
+    cues = [Cue(1, 0, 3, 'a' * 61), Cue(2, 2.8, 5, 'second')]
+    monkeypatch.setattr(p, 'parse_srt', lambda path: cues)
+    result = p._subtitle_quality(tmp_path / 'movie.vi.srt', 10)
+    assert result['cue_count'] == 2
+    assert {issue['type'] for issue in result['issues']} >= {'long_text', 'overlap'}
+
+
+def test_auto_warning_filter_ignores_ranking_metadata_and_asr_reference_gap():
+    messages = [
+        '1 | explicit | unknown/unverified | ? | ?',
+        'No English timing reference; subtitle synchronization is unverified',
+        'Warning: TTS segment 2 was shortened',
+    ]
+    assert p._pipeline_warnings(messages) == messages[1:]
+    assert p._pipeline_warnings(messages, asr=True) == messages[2:]
+
+
+def test_auto_retries_transient_tts_failure_once(stages, monkeypatch):
+    video, srt, config, _ = stages
+    config.mix = 'voiceover'
+    monkeypatch.setattr(p, '_resolve_subtitle', lambda *a, **kw: (srt, 'vi'))
+    monkeypatch.setattr(p, 'probe', _auto_probe)
+    attempts = []
+
+    def fake_dub(source, subtitle, settings, report, **kwargs):
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise JellyDubError('1 TTS segments failed. Re-run to retry.')
+        outputs = p.output_paths(source, settings.out_dir)
+        for path in outputs.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'output')
+        return outputs
+
+    monkeypatch.setattr(p, 'dub', fake_dub)
+    messages = []
+    p.auto(video, None, config, report=messages.append)
+    assert len(attempts) == 2
+    assert any('Retrying failed TTS segments once' in message for message in messages)
+
+
+def test_default_export_is_mkv_srt_from_lossless_mix(stages, monkeypatch):
+    video, srt, config, events = stages
+    seen = []
+    def mux(source, audio, subtitles, output):
+        seen.append(audio)
+        output.write_bytes(b'mkv')
+    monkeypatch.setattr(p, 'mux_mkv', mux)
+    outputs = p.dub(video, srt, config, report=lambda message: None)
+    assert set(outputs) == {'mkv', 'srt'}
+    assert seen[0].name == 'mixed-dub-only.wav'
+    assert 'export' not in events and 'mp4' not in events
+    assert {path.suffix for path in config.out_dir.iterdir()} == {'.mkv', '.srt'}
+
+
+def test_auto_keeps_report_internal_and_optional_exports_off(stages, monkeypatch):
+    video, srt, config, _ = stages
+    monkeypatch.setattr(p, 'probe', _auto_probe)
+    outputs = p.auto(video, srt, config, report=lambda message: None)
+    assert set(outputs) == {'mkv', 'srt', 'report'}
+    assert outputs['report'].is_relative_to(config.cache_dir)
+    assert {path.suffix for path in config.out_dir.iterdir()} == {'.mkv', '.srt'}
+    assert set(json.loads(outputs['report'].read_text())['outputs']) == {'mkv', 'srt'}
+
+
+@pytest.mark.parametrize('error', [KeyError('duration'), ValueError('bad duration'), RuntimeError('unexpected probe failure')])
+def test_auto_records_unexpected_failures(stages, monkeypatch, error):
+    video, srt, config, _ = stages
+    monkeypatch.setattr(p, '_resolve_subtitle', lambda *a: (srt, 'vi'))
+    def fail(*a, **kw):
+        raise error
+    monkeypatch.setattr(p, 'dub', fail)
+    with pytest.raises(type(error)):
+        p.auto(video, None, config, report=lambda s: None)
+    reports = list((config.cache_dir/'reports').glob('*.json'))
+    assert len(reports) == 1
+    data = json.loads(reports[0].read_text())
+    assert data['status'] == 'failed' and str(error) in data['error']

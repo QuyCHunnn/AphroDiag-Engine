@@ -14,9 +14,11 @@ dependencies = [
 [project.optional-dependencies]
 translate = ["transformers>=4.44", "sentencepiece>=0.2", "sacremoses>=0.1", "torch>=2.3"]
 separate = ["audio-separator[cpu]>=0.30"]
-vieneu = ["vieneu"]
+vieneu = ["vieneu", "threadpoolctl>=3.5"]
 opensubtitles = ["subliminal>=2.8"]
 live = ["zeroconf>=0.130"]
+asr = ["faster-whisper>=1.1", "av>=11,<16"]
+intel = ["optimum-intel[openvino]>=2.1,<2.2", "openvino>=2026.4.1,<2027", "faster-whisper>=1.1", "av>=11,<16"]
 
 [project.scripts]
 jellydub = "jellydub.cli:app"
@@ -40,6 +42,7 @@ addopts = "-m 'not e2e and not slow'"
 # the index at https://download.pytorch.org/whl/cu126 and re-run `uv sync --extra translate`.
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]
+torchvision = [{ index = "pytorch-cpu" }]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
