@@ -11,7 +11,7 @@ Engine Python độc lập dành cho xử lý file, phát trực tiếp và tíc
 ## Điểm nổi bật
 
 - **Ba cách dùng:** CLI xử lý file, HTTP API tạo giọng theo vị trí phát, HLS thử nghiệm cho Jellyfin.
-- **Linh hoạt backend:** OPUS-MT hoặc Gemini để dịch; Edge-TTS, VieNeu hoặc Gemini TTS để đọc.
+- **Linh hoạt backend:** OPUS-MT hoặc Gemini để dịch; Edge-TTS, VieNeu, Gemini TTS hoặc VoxCPM2 GGUF để đọc.
 - **Tái sử dụng cache:** lưu bản dịch và từng đoạn giọng nói, tiếp tục công việc khi chạy lại.
 - **Tìm phụ đề:** hỗ trợ file cạnh phim, phụ đề nhúng và nguồn trực tuyến tùy chọn.
 - **Tự động hóa CLI:** một lệnh tìm phụ đề hoặc chép lời, lồng tiếng, mặc định xuất MKV + SRT và lưu QC trong cache.
@@ -130,45 +130,220 @@ Thay IP bằng địa chỉ LAN của máy chạy engine. Đặt `.strm` trong t
 
 HLS tạo segment theo yêu cầu, hỗ trợ tua và tái sử dụng cache. Hiện xuất **H.264 SDR tối đa 1080p/30fps + AAC stereo**; nguồn là file video cục bộ. Độ trễ phụ thuộc CPU, dịch và TTS; khả năng phát/tua cần kiểm tra trên thiết bị thực tế.
 
-### Chọn VieNeu hoặc Gemini TTS
+## Chọn backend và chuẩn bị TTS
 
-Sau khi cài các extra, dùng `--no-sync` để giữ nguyên môi trường đã cài.
+VieNeu vẫn là mặc định. Gemini, VoxCPM2 và Edge chỉ chạy khi chọn tường minh; engine không tự chuyển backend khi hết quota hoặc lỗi GPU. `--translator gemini` chọn **bộ dịch**, còn `--tts gemini` chọn **bộ tạo giọng**.
+
+| Backend | Cài đặt / tài nguyên | Chỉ dẫn cách diễn | Giọng tham chiếu |
+| --- | --- | --- | --- |
+| **VieNeu** | `uv sync --extra vieneu`; tải model lần đầu, sau đó chạy cục bộ | Tag phi ngôn ngữ và dấu câu; nhiều yêu cầu chỉ được báo chưa hỗ trợ | WAV 3–8 giây; hoặc preset như `Hải Đăng` |
+| **Gemini** | Môi trường JellyDub + `GEMINI_API_KEY`; cần mạng và quota | Style chung và `direction` riêng từng câu | Adapter hiện dùng named voice như `Charon`, không clone từ WAV |
+| **VoxCPM2** | Runtime C++ `voxcpm2-cli` + hai file GGUF; không cần Python extra TTS | Prefix chỉ dẫn chung và riêng từng câu | WAV 3–8 giây; không nhận preset VieNeu/Gemini |
+| **Edge** | Có trong dependency cơ bản; cần mạng | Không hỗ trợ `direction` diễn xuất, engine sẽ cảnh báo | Không clone giọng |
+
+Dùng `uv run --no-sync` sau khi đã cài môi trường. Nếu cần dịch/ASR/tách nền, cài thêm các extra tương ứng trong cùng lệnh `uv sync`; không cần chúng cho preview SRT tiếng Việt.
+
+### VieNeu: profile cục bộ
+
+Tạo `tts.vieneu.toml`:
+
+```toml
+[jellydub]
+tts = "vieneu"
+voice = "Hải Đăng"
+tts_device = "cpu"
+speech_plan = "speech.json"
+mix = "dub-only"
+```
+
+Cấu hình này chọn CPU tường minh. VieNeu không dùng backend Intel OpenCL của VoxCPM2. Có thể thêm `reference = ["refs/peter.wav"]` để dùng audio tham chiếu; bỏ trường này nếu chỉ dùng preset.
+
+### Gemini: profile và API key
+
+Tạo `tts.gemini.toml`:
+
+```toml
+[jellydub]
+tts = "gemini"
+tts_model = "gemini-3.8-flash-lite-tts"
+voice = "Charon"
+tts_style = "Speak Vietnamese naturally. Follow each line's acting direction."
+tts_workers = 2
+speech_plan = "speech.json"
+mix = "dub-only"
+```
+
+Nhập key trong terminal trước khi chạy preview/dub:
 
 ```bash
-uv sync --extra vieneu --extra translate --extra asr
-
-# Mặc định: VieNeu, không gọi API Gemini để tạo giọng
-uv run --no-sync jellydub auto movie.mp4 --mix voiceover --out-dir dubbed/vieneu
-
-# Chọn VieNeu tường minh; có thể dùng lại cache VieNeu đã có
-uv run --no-sync jellydub auto movie.mp4 --tts vieneu --voice "Hải Đăng" \
-  --out-dir dubbed/vieneu
-
-# Chỉ dùng Gemini khi có quota: nhập key kín, không lưu vào mã/config
 read -rsp 'Gemini API key: ' GEMINI_API_KEY
 export GEMINI_API_KEY
 printf '\n'
-uv run --no-sync jellydub auto movie.mp4 --config jellydub.gemini.toml
-unset GEMINI_API_KEY
-
-# Quay về VieNeu: chạy lại không kèm profile Gemini
-uv run --no-sync jellydub auto movie.mp4 --tts vieneu --out-dir dubbed/vieneu
+# Chạy các lệnh --config tts.gemini.toml bên dưới trong terminal này.
+# Sau khi dùng xong:
+# unset GEMINI_API_KEY
 ```
 
-Profile Gemini dùng `Charon`; VieNeu dùng tên preset riêng. Khi đổi backend, bỏ `--voice` cũ hoặc chọn giọng đúng engine. Cache audio được phân biệt theo engine và giọng. Không đổi tự động giữa chừng, nên một video không bị trộn giọng Gemini/VieNeu vì lỗi quota. Chọn `--translator gemini` là đổi **bộ dịch**, độc lập với `--tts gemini` là đổi **bộ tạo giọng**; mặc định dịch vẫn là OPUS-MT.
+Adapter hiện đọc `GEMINI_API_KEY` hoặc `GOOGLE_API_KEY`; chưa tích hợp OAuth/ADC hay token đăng nhập CLI. Không có cơ chế lấy quota Code Assist/CLI để tạo giọng. Key không được ghi vào TOML hoặc cache. Profile có sẵn [jellydub.gemini.toml](jellydub.gemini.toml) dùng `voiceover`; nếu muốn không trộn tiếng Anh gốc, dùng `dub-only` như ví dụ trên. Xem [chi tiết Gemini](docs/gemini-tts.md).
 
-Lệnh `serve`, `stream`, `dub` và `preview` cũng dùng VieNeu mặc định; truyền `--tts gemini` để chọn Gemini. Ví dụ nghe thử SRT tiếng Việt đã duyệt:
+### VoxCPM2: build Intel GPU trên WSL
+
+Máy phải có Intel OpenCL runtime/driver hoạt động. Cài công cụ build và headers không tự cài hay sửa driver GPU. Lệnh `clinfo -l` cần liệt kê Intel Graphics; WSL host cần truy cập được `/dev/dxg`.
+
+Chạy từ thư mục gốc repo:
 
 ```bash
-uv run --no-sync jellydub preview --srt movie.vi.srt --tts vieneu --out-dir preview/vieneu
-uv run --no-sync jellydub preview --srt movie.vi.srt --config jellydub.gemini.toml --out-dir preview/gemini
+sudo apt install build-essential cmake ninja-build git ocl-icd-opencl-dev opencl-headers clinfo
+clinfo -l
+
+# Runtime đã dùng để kiểm tra; áp patch OpenCL trong repo này.
+git clone https://github.com/tc-mb/llama.cpp-omni.git runtime/llama.cpp-omni
+git -C runtime/llama.cpp-omni checkout eefebf4e399a3cc99119cb097d6f4c9e8f329365
+git -C runtime/llama.cpp-omni apply ../../patches/voxcpm2-opencl-audio.patch
+cmake -S runtime/llama.cpp-omni -B runtime/voxcpm2-build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DGGML_OPENCL=ON \
+  -DGGML_OPENCL_USE_ADRENO_KERNELS=OFF -DGGML_CUDA=OFF \
+  -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF \
+  -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
+  -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_UI=OFF
+cmake --build runtime/voxcpm2-build --target voxcpm2-cli -j 2
+
+# Hai file khoảng 3,55 GB tổng cộng; tải đúng revision đã thử.
+uvx --from huggingface-hub hf download DennisHuang648/VoxCPM2-GGUF \
+  VoxCPM2-BaseLM-Q8_0.gguf VoxCPM2-Acoustic-F16.gguf \
+  --revision 169f64d8b98bbaab1761e4ca3a83e6af653456cc \
+  --local-dir models/voxcpm2
 ```
 
-Cấu hình Gemini TTS: [hướng dẫn](docs/gemini-tts.md) và [profile mẫu](jellydub.gemini.toml). API key lấy từ biến môi trường, không lưu trong cấu hình.
+Chỉ áp patch một lần vào runtime đúng commit. Tạo `tts.voxcpm2.toml`:
 
-VoxCPM2 cục bộ: chọn `--tts voxcpm2`; hỗ trợ GGUF, reference theo nhân vật và chỉ dẫn cảm xúc theo câu. [Hướng dẫn GPU/thiết lập](docs/voxcpm2.md) · [profile máy hiện tại](jellydub.voxcpm2.toml). `auto`/`gpu` yêu cầu GPU và báo lỗi khi runtime fallback CPU.
+```toml
+[jellydub]
+tts = "voxcpm2"
+tts_model = "models/voxcpm2"
+voxcpm2_binary = "runtime/voxcpm2-build/bin/voxcpm2-cli"
+voxcpm2_timeout = 600
+tts_device = "gpu"
+tts_style = "Speak Vietnamese naturally. Follow each line's acting direction."
+reference = ["refs/peter.wav"]
+tts_workers = 1
+speech_plan = "speech.json"
+mix = "dub-only"
+```
 
-Kết quả tối ưu và giới hạn: [checkpoint](docs/checkpoints-2026-11-17.md), [kế hoạch và thực thi](docs/next-optimization-execution-2026-11-17.md), [review lỗi](docs/bug-review-2026-11-17.md). GenAI ASR và các thử nghiệm TTS GPU vẫn cần chọn tường minh; chưa đạt mục tiêu video 3 phút trong 40–60 giây.
+Chuẩn bị clip `refs/peter.wav` dài 3–8 giây của giọng muốn tham chiếu. Nếu bỏ `reference`, model tạo giọng theo lời/chỉ dẫn, không bảo đảm giữ cùng danh tính qua nhiều câu. Thư mục `tts_model` phải chứa đúng một `VoxCPM2-BaseLM-*.gguf` và một `VoxCPM2-Acoustic-*.gguf`. Có thể bỏ `voxcpm2_binary` nếu `voxcpm2-cli` đã nằm trên PATH. Bỏ `voice`/`speaker_voices` của backend trước khi chuyển sang VoxCPM2.
+
+`gpu` và `auto` yêu cầu runtime xác nhận toàn bộ lớp BaseLM cùng các thành phần âm thanh dùng GPU; không chấp nhận fallback CPU. `cuda` còn yêu cầu backend CUDA. Muốn chạy CPU phải chọn `tts_device = "cpu"`. Tokenization, điều khiển, I/O và một số nút phụ trợ vẫn xử lý trên host; GPU không có nghĩa mọi thao tác đều chạy GPU.
+
+[jellydub.voxcpm2.toml](jellydub.voxcpm2.toml) là profile của máy thử, trỏ vào `artifacts`; clone repo mới không có model/binary/audio ở đó. Trên máy khác dùng profile ở trên với đường dẫn đã chuẩn bị. Xem [kiểm tra kernel và chi tiết VoxCPM2](docs/voxcpm2.md).
+
+## Chỉ dẫn cách đọc bằng speech plan chung
+
+Một JSON dùng cho **Gemini, VieNeu và VoxCPM2**. Chỉ thay profile backend; phụ đề và chỉ dẫn được quản lý riêng. Cần SRT tiếng Việt cuối cùng đã duyệt trước khi viết plan. Chưa có bước tự xem video rồi suy ra cảm xúc.
+
+Ví dụ câu số 1 trong SRT:
+
+```srt
+1
+00:00:00,000 --> 00:00:04,000
+Thôi được rồi, anh nói đúng.
+```
+
+Tạo `speech.json` tương ứng, hoặc sửa từ [JSON mẫu](examples/speech-plan.json):
+
+```json
+[
+  {
+    "index": 1,
+    "text_sub": "Thôi được rồi, anh nói đúng.",
+    "text_tts": "Thôi… được rồi. Anh nói đúng.",
+    "direction": {
+      "emotion": "buồn, miễn cưỡng chấp nhận",
+      "pace": "chậm",
+      "emphasis": ["được rồi", "anh nói đúng"],
+      "ending": "hạ giọng, nhỏ dần",
+      "nonverbal": "thở dài trước câu"
+    }
+  }
+]
+```
+
+| Trường | Ý nghĩa |
+| --- | --- |
+| `index` | Số câu trong SRT tiếng Việt cuối cùng, không phải vị trí trong mảng JSON |
+| `text_sub` | Nội dung phụ đề phải khớp SRT để phát hiện plan bị lệch; không dùng để thay SRT |
+| `text_tts` | Lời thực sự đọc; bỏ trường này để dùng lời SRT, hoặc đặt `""` để bỏ đọc câu |
+| `direction.emotion` | Cảm xúc và ý định diễn, ví dụ miễn cưỡng chấp nhận |
+| `direction.pace` | Nhịp đọc, ví dụ chậm |
+| `direction.emphasis` | Mảng các từ/cụm từ muốn nhấn |
+| `direction.ending` | Cách kết thúc câu, ví dụ hạ giọng |
+| `direction.nonverbal` | Hành động phi ngôn ngữ, ví dụ thở dài trước câu |
+| `ref_audio` | Tùy chọn ngoài `direction`: đường dẫn mẫu giọng riêng cho câu |
+
+Mỗi trường trong `direction` đều tùy chọn; trừ `emphasis` là mảng string, các giá trị còn lại là string không rỗng. Chỉ dẫn nên cụ thể về từ cần nhấn, nhịp và cuối câu; tránh ghi chung chung “đọc truyền cảm”. JSON sai kiểu/trường lạ hoặc `text_sub` không khớp sẽ báo lỗi trước khi tạo giọng.
+
+Cách chuyển chỉ dẫn phụ thuộc backend:
+
+| Backend | Cách thực hiện và giới hạn |
+| --- | --- |
+| **Gemini** | Gửi chỉ dẫn riêng từng câu trong speech metadata/prompt, tách khỏi transcript. Kết hợp với `tts_style` chung |
+| **VoxCPM2** | Chuyển thành một prefix `(Emotion: ...; Pace: ...)`, kết hợp với `tts_style`. Prefix không được ghi vào SRT |
+| **VieNeu** | `thở dài`, `cười`, `hắng giọng` trước câu được chuyển thành tag; nhịp `chậm` được gợi ý bằng dấu ba chấm ở chỗ ngắt có sẵn. `emotion`, `emphasis`, `ending` chưa có điều khiển trực tiếp và được báo không áp dụng |
+
+VieNeu không tự biến cảm xúc “buồn” thành thở dài. Tag viết tay như `[thở dài]` trong `text_tts` chỉ dùng cho VieNeu; muốn dùng cùng plan cho ba backend, đặt hành động trong `direction.nonverbal`. Cùng một chỉ dẫn không bảo đảm các model diễn giống nhau hoặc làm đúng tuyệt đối.
+
+`speech_plan` và reference trong TOML tính từ thư mục chạy lệnh. `ref_audio` trong JSON tính từ thư mục JSON; với VieNeu/VoxCPM2, mẫu phải dài 3–8 giây. Gemini hiện bỏ qua `ref_audio` trong plan có `direction` và báo cảnh báo; không đặt `reference` trong profile Gemini. Nếu dùng trường `emotion` cũ cùng `direction.emotion`, hai giá trị phải giống nhau. [Schema và tương thích plan cũ](docs/expressive-speech.md).
+
+### Nhiều nhân vật
+
+Gán speaker bằng prefix trong SRT, ví dụ `PETER: Không! Anh không ổn!`. Parser tách label khỏi lời đọc. Trong profile VieNeu/VoxCPM2 có thể dùng:
+
+```toml
+[jellydub]
+# Thêm vào profile hiện có, không tạo hai bảng [jellydub] trong cùng file.
+reference = ["PETER=refs/peter.wav", "LOIS=refs/lois.wav"]
+```
+
+Với Gemini, dùng named voice thay cho WAV:
+
+```toml
+[jellydub.speaker_voices]
+PETER = "Charon"
+LOIS = "Kore"
+```
+
+Engine chưa tự nhận diện người nói. VoxCPM2 có reference theo label nhưng thiếu label của câu sẽ báo lỗi nếu không có reference mặc định; có thể thêm một đường dẫn không label vào `reference` làm mặc định.
+
+## Preview, duyệt rồi chạy toàn video
+
+Chọn **một** profile đã chuẩn bị. Ví dụ với VoxCPM2:
+
+```bash
+# Nghe các câu bắt đầu trong 10 giây đầu; có thể đổi --start để chọn đoạn khác.
+uv run --no-sync jellydub preview --srt movie.vi.srt \
+  --config tts.voxcpm2.toml --start 0 --seconds 10 --out-dir preview/voxcpm2
+
+# Sau khi nghe và chỉnh speech.json, dùng cùng profile để dub.
+uv run --no-sync jellydub dub movie.mp4 --srt movie.vi.srt --source-lang vi \
+  --config tts.voxcpm2.toml --out-dir dubbed/voxcpm2
+```
+
+Đổi thành `tts.vieneu.toml` hoặc `tts.gemini.toml` để dùng plan này với backend khác. Preview nhận SRT đã duyệt; không dịch hay ASR. Mỗi lượt preview chọn tối đa 30 giây theo thời điểm bắt đầu câu và không cắt ngang lời đọc.
+
+Preview xuất `preview.wav`, `preview.vi.srt` và `review.json`. Kiểm tra `speech_directions` để xem chỉ dẫn đã nhận, `speech_warnings` để biết phần chưa hỗ trợ/bị bỏ qua, `execution` để xem backend thực thi và `timing_warnings` để xem cảnh báo căn thời gian. Trạng thái vẫn là `pending_listening_review`; cần người nghe duyệt phát âm, cảm xúc, nhịp, đúng nhân vật và độ vừa câu. Lệnh `dub` không ép người dùng phải duyệt preview trước.
+
+Muốn loại tiếng gốc khỏi **track Việt**, chọn `dub-only`. Muốn giữ nhạc/hiệu ứng, cài extra `separate` rồi chọn `replace`; chất lượng tách lời gốc cần nghe kiểm tra, chưa bảo đảm sạch hoàn toàn. `voiceover` vẫn trộn tiếng gốc ở mức thấp nên có thể nghe tiếng Anh. MKV giữ cả các track nguồn; trong trình phát cần chọn đúng track tiếng Việt.
+
+### Cache, lỗi thường gặp và tốc độ
+
+- **Chạy lại sau lỗi:** các câu thành công được cache. Chỉ dẫn khác nhau của Gemini/VoxCPM2, giọng, reference hoặc model khác nhau tạo cache riêng. VieNeu có thể tái sử dụng audio khi chỉ thay trường chưa hỗ trợ; cảnh báo mới vẫn được ghi.
+- **Gemini báo key/quota:** kiểm tra biến môi trường, quyền dùng model và quota của project; engine không tự đổi sang VieNeu/VoxCPM2.
+- **GPU bị từ chối hoặc lỗi `SIN`/`SUM`:** kiểm tra `clinfo -l`, đúng binary có OpenCL và patch đúng revision. Sandbox có thể không thấy GPU dù WSL host nhận được; engine không tự vượt sandbox.
+- **Sai `text_sub` hoặc index:** sửa plan theo bản SRT tiếng Việt cuối cùng; chỉ những index có trong cửa sổ preview mới được xử lý.
+- **Câu quá dài:** chia hoặc rút gọn câu rồi xem lại phụ đề/thời gian. VoxCPM2 giới hạn 200 patch, tương ứng 32 giây ở model đã thử; audio chạm giới hạn bị từ chối. Timeout mỗi câu mặc định 600 giây, điều chỉnh bằng `voxcpm2_timeout`.
+- **Tốc độ VoxCPM2:** hiện nạp model lại mỗi câu, chưa dùng worker thường trú; nạp model/cấp phát bộ nhớ có thể tốn thời gian hơn suy luận. Không suy từ tốc độ một sample sang thời gian xử lý toàn video.
+
+Kiểm tra ngày 25/11/2026: **575 Python tests đạt**, 5 bài mạng/model bị loại theo marker; **26 ca kiểm tra số OpenCL đạt**. Đã kiểm tra preview VoxCPM2 trên Iris Xe/OpenCL, dùng lại cache và xuất clip dub ngắn; chưa chạy lại toàn video bằng VoxCPM2. Gemini `direction` đã kiểm tra bằng request mô phỏng; không phải xác nhận diễn xuất bằng lượt API thật. Các số đo và giới hạn GPU: [VoxCPM2](docs/voxcpm2.md). Các checkpoint tối ưu trước đó: [checkpoint](docs/checkpoints-2026-11-17.md), [kế hoạch](docs/next-optimization-execution-2026-11-17.md), [review lỗi](docs/bug-review-2026-11-17.md). Chưa đạt mục tiêu video 3 phút trong 40–60 giây.
 
 ## Backend và cấu hình
 
@@ -179,6 +354,7 @@ Kết quả tối ưu và giới hạn: [checkpoint](docs/checkpoints-2026-11-17
 | Dịch | `agy`, `agy-stream` | Thử nghiệm; cần Antigravity CLI đã đăng nhập |
 | Giọng đọc | `vieneu` — mặc định | Cục bộ; cài extra `vieneu`, hỗ trợ giọng tham chiếu |
 | Giọng đọc | `gemini` — chọn riêng | API; cần key/quota, giọng mặc định Charon |
+| Giọng đọc | `voxcpm2` — chọn riêng | Cục bộ; runtime C++ + GGUF, GPU được kiểm tra, hỗ trợ reference/direction |
 | Giọng đọc | `edge` — chọn riêng | Trực tuyến; client không chính thức, không clone giọng |
 
 ```bash
@@ -221,5 +397,3 @@ Mã nguồn nằm trong `src/jellydub`; `pipeline.py` điều phối xử lý fi
 Test mặc định bỏ qua nhóm `e2e` và `slow` cần mạng/model. Không commit thông tin đăng nhập, phim, model hay cache.
 
 **Giấy phép:** mã nguồn công bố theo MIT; thư viện, model và dịch vụ có điều khoản riêng. Xem [ghi chú giấy phép bên thứ ba](LICENSES-THIRD-PARTY.md).
-
-Speech plan chung cho Gemini, VieNeu và VoxCPM2: lời đọc riêng, `direction` theo từng câu, mẫu giọng và cảnh báo phần không hỗ trợ. [Hướng dẫn](docs/expressive-speech.md) · [JSON mẫu](examples/speech-plan.json).
