@@ -11,6 +11,7 @@ import typer
 from .config import load_config
 from .ffmpeg import require_ffmpeg
 from .models import JellyDubError
+from .tts.base import TTSError
 from . import pipeline
 
 app = typer.Typer(help="Translate subtitles and create Vietnamese audio for Jellyfin.", no_args_is_help=True)
@@ -23,7 +24,7 @@ def _report(message: str) -> None:
 def _run(action):
     try:
         return action()
-    except (JellyDubError, OSError) as exc:
+    except (JellyDubError, OSError, TTSError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1) from exc
 
@@ -56,9 +57,9 @@ def dub(
     source_lang: Annotated[str | None, typer.Option(help="auto (default), en or vi")] = None,
     translator: Annotated[str | None, typer.Option(help="opus-mt (offline), gemini (API), agy or agy-stream (experimental CLI)")] = None,
     translator_model: Annotated[str | None, typer.Option(help="Model override for the selected translator")] = None,
-    tts: Annotated[str | None, typer.Option(help="vieneu (default), gemini or edge")] = None,
-    tts_model: Annotated[str | None, typer.Option(help="Gemini TTS model id")] = None,
-    tts_style: Annotated[str | None, typer.Option(help="Gemini speaking instructions")] = None,
+    tts: Annotated[str | None, typer.Option(help="vieneu (default), voxcpm2, gemini or edge")] = None,
+    tts_model: Annotated[str | None, typer.Option(help="Gemini model id or VoxCPM2 GGUF model directory")] = None,
+    tts_style: Annotated[str | None, typer.Option(help="Gemini/VoxCPM2 speaking instructions")] = None,
     tts_workers: Annotated[int | None, typer.Option(min=1, help="Concurrent TTS requests (default 4; limited by provider)")] = None,
     voice: Annotated[str | None, typer.Option()] = None,
     rate: Annotated[str | None, typer.Option()] = None,
@@ -103,9 +104,9 @@ def auto(
     asr_beam_size: Annotated[int | None, typer.Option(min=1, help="Whisper beam size (default 5)")] = None,
     translator: Annotated[str | None, typer.Option(help="opus-mt, gemini, agy or agy-stream")] = None,
     translator_model: Annotated[str | None, typer.Option()] = None,
-    tts: Annotated[str | None, typer.Option(help="vieneu (default), gemini or edge")] = None,
-    tts_model: Annotated[str | None, typer.Option(help="Gemini TTS model id")] = None,
-    tts_style: Annotated[str | None, typer.Option(help="Gemini speaking instructions")] = None,
+    tts: Annotated[str | None, typer.Option(help="vieneu (default), voxcpm2, gemini or edge")] = None,
+    tts_model: Annotated[str | None, typer.Option(help="Gemini model id or VoxCPM2 GGUF model directory")] = None,
+    tts_style: Annotated[str | None, typer.Option(help="Gemini/VoxCPM2 speaking instructions")] = None,
     tts_workers: Annotated[int | None, typer.Option(min=1)] = None,
     tts_precision: Annotated[str | None, typer.Option(help="fp32 or experimental CPU int8 (VieNeu)")] = None,
     voice: Annotated[str | None, typer.Option()] = None,
@@ -116,7 +117,7 @@ def auto(
     cache_dir: Annotated[Path | None, typer.Option()] = None,
     config: Annotated[Path | None, typer.Option(help="TOML configuration file")] = None,
     device: Annotated[str | None, typer.Option(help="Device for local translation/separation")] = None,
-    tts_device: Annotated[str | None, typer.Option(help="VieNeu device: auto, cpu or cuda")] = None,
+    tts_device: Annotated[str | None, typer.Option(help="TTS device: auto, cpu, gpu (VoxCPM2) or cuda")] = None,
     translate_device: Annotated[str | None, typer.Option(help="OPUS device: auto, cpu or cuda")] = None,
 ):
     """Automatically find or transcribe subtitles, dub the video, and export MKV/SRT by default."""
@@ -167,9 +168,9 @@ def serve(
     port: Annotated[int, typer.Option()] = 8765,
     translator: Annotated[str | None, typer.Option(help="opus-mt (offline), gemini (API), agy or agy-stream (experimental CLI)")] = None,
     translator_model: Annotated[str | None, typer.Option(help="Model override for the selected translator")] = None,
-    tts: Annotated[str | None, typer.Option(help="vieneu (default), gemini or edge")] = None,
-    tts_model: Annotated[str | None, typer.Option(help="Gemini TTS model id")] = None,
-    tts_style: Annotated[str | None, typer.Option(help="Gemini speaking instructions")] = None,
+    tts: Annotated[str | None, typer.Option(help="vieneu (default), voxcpm2, gemini or edge")] = None,
+    tts_model: Annotated[str | None, typer.Option(help="Gemini model id or VoxCPM2 GGUF model directory")] = None,
+    tts_style: Annotated[str | None, typer.Option(help="Gemini/VoxCPM2 speaking instructions")] = None,
     tts_workers: Annotated[int | None, typer.Option(min=1, help="Concurrent TTS requests (default 4; limited by provider)")] = None,
     voice: Annotated[str | None, typer.Option()] = None,
     rate: Annotated[str | None, typer.Option()] = None,
@@ -219,9 +220,9 @@ def stream(
     source_lang: Annotated[str | None, typer.Option(help="auto, en or vi")] = None,
     translator: Annotated[str | None, typer.Option(help="opus-mt, gemini, agy or agy-stream")] = None,
     translator_model: Annotated[str | None, typer.Option()] = None,
-    tts: Annotated[str | None, typer.Option(help="vieneu (default), gemini or edge")] = None,
-    tts_model: Annotated[str | None, typer.Option(help="Gemini TTS model id")] = None,
-    tts_style: Annotated[str | None, typer.Option(help="Gemini speaking instructions")] = None,
+    tts: Annotated[str | None, typer.Option(help="vieneu (default), voxcpm2, gemini or edge")] = None,
+    tts_model: Annotated[str | None, typer.Option(help="Gemini model id or VoxCPM2 GGUF model directory")] = None,
+    tts_style: Annotated[str | None, typer.Option(help="Gemini/VoxCPM2 speaking instructions")] = None,
     tts_workers: Annotated[int | None, typer.Option(min=1)] = None,
     voice: Annotated[str | None, typer.Option()] = None,
     rate: Annotated[str | None, typer.Option()] = None,

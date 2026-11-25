@@ -36,15 +36,22 @@ def create_preview(srt: Path, out_dir: Path, config: Config, *, start=0.0,
     # Invalidate an older review before starting potentially failing synthesis.
     manifest = {"status": "generating", "input_sha256": file_digest(srt),
                 "start": start, "requested_seconds": seconds}
+    if config.speech_plan:
+        manifest["speech_plan"] = str(Path(config.speech_plan).expanduser().resolve())
+        manifest["speech_plan_sha256"] = file_digest(Path(config.speech_plan).expanduser())
     atomic_write_text(outputs[2], json.dumps(manifest, indent=2))
     provider = get_provider(config.tts, **tts_options(config, report=report))
     try:
-        identities = {str(c.index): provider.cache_id_for(c.speaker)
+        from .speech import prepare_speech
+        spoken = prepare_speech(cues, provider, config.speech_plan)
+        identities = {str(c.index): provider.cache_id_for(spoken[c.index][1])
                       if hasattr(provider, "cache_id_for") else provider.cache_id() for c in cues}
         results, failures = synthesize_cues(cues, provider, config.cache_dir / "tts",
-                                          workers=config.tts_workers)
+                                          speech_plan=config.speech_plan, workers=config.tts_workers)
     finally:
         manifest["execution"] = getattr(provider, "execution", None)
+        manifest["speech_warnings"] = getattr(provider, "speech_warnings", [])
+        manifest["speech_directions"] = getattr(provider, "speech_directions", {})
         provider.close()
     if failures:
         raise JellyDubError(f"{len(failures)} preview segments failed; successful speech is cached")
@@ -59,7 +66,8 @@ def create_preview(srt: Path, out_dir: Path, config: Config, *, start=0.0,
                     audio_sha256=file_digest(outputs[0]), provider=config.tts,
                     voice_identities=identities,
                     speakers=sorted({c.speaker or "default" for c in cues}),
-                    cues=[{"index": c.index, "speaker": c.speaker, "text": c.text} for c in cues],
+                    cues=[{"index": c.index, "speaker": c.speaker, "text": c.text,
+                           "text_tts": spoken[c.index][0]} for c in cues],
                     timing_warnings=[c.warning for c in clips if c.warning],
                     criteria=["pronunciation", "meaning", "speaker identity", "emotion", "rhythm"])
     atomic_write_text(outputs[2], json.dumps(manifest, ensure_ascii=False, indent=2))

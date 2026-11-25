@@ -12,6 +12,9 @@ def get_provider(name: str, **options) -> TTSProvider:
     if name == "vieneu":
         from .vieneu import VieNeuTTS
         return VieNeuTTS(**options)
+    if name == "voxcpm2":
+        from .voxcpm2 import VoxCPM2TTS
+        return VoxCPM2TTS(**options)
     if name == "gemini":
         from .gemini import GeminiTTS
         return GeminiTTS(**options)

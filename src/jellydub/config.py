@@ -21,6 +21,9 @@ class Config:
     asr_beam_size: int = 5
     tts: str = "vieneu"
     tts_model: str | None = None
+    voxcpm2_binary: str | None = None
+    voxcpm2_timeout: int = 600
+    speech_plan: str | None = None
     tts_style: str = ""
     tts_workers: int = 4
     tts_blas_threads: int = 2
@@ -54,7 +57,7 @@ class Config:
     })
 
     def validate(self) -> None:
-        for key, choices in (("source_lang", {"auto", "en", "vi"}), ("tts", {"edge", "vieneu", "gemini"}),
+        for key, choices in (("source_lang", {"auto", "en", "vi"}), ("tts", {"edge", "vieneu", "gemini", "voxcpm2"}),
                              ("pipeline_mode", {"sequential", "overlap"}),
                              ("tts_precision", {"fp32", "int8"}),
                              ("mix", {"dub-only", "voiceover", "replace"}),
@@ -100,6 +103,14 @@ class Config:
             raise JellyDubError("translator_model must be a nonempty string")
         if self.tts_model is not None and (not isinstance(self.tts_model, str) or not self.tts_model.strip()):
             raise JellyDubError("tts_model must be a nonempty string")
+        if self.speech_plan is not None and (not isinstance(self.speech_plan, str) or not self.speech_plan.strip()):
+            raise JellyDubError("speech_plan must be a nonempty JSON path")
+        if self.voxcpm2_binary is not None and (not isinstance(self.voxcpm2_binary, str) or not self.voxcpm2_binary.strip()):
+            raise JellyDubError("voxcpm2_binary must be a nonempty executable path")
+        if type(self.voxcpm2_timeout) is not int or self.voxcpm2_timeout < 1:
+            raise JellyDubError("voxcpm2_timeout must be a positive integer")
+        if self.tts == "voxcpm2" and (self.voice is not None or self.speaker_voices):
+            raise JellyDubError("VoxCPM2 uses reference audio or voice design instructions, not named voice presets")
         if not isinstance(self.tts_style, str):
             raise JellyDubError("tts_style must be a string")
         if self.tts == "gemini" and self.reference:

@@ -52,6 +52,9 @@ def _work_dir(video: Path, srt: Path, config: Config) -> Path:
     for option in ("tts_device", "translate_device", "asr_python", "tts_model"):
         if cache_settings[option] is None:
             cache_settings.pop(option)
+    cache_settings.pop("voxcpm2_timeout")
+    if config.tts != "voxcpm2" or cache_settings["voxcpm2_binary"] is None:
+        cache_settings.pop("voxcpm2_binary")
     if not cache_settings["tts_style"]:
         cache_settings.pop("tts_style")
     if cache_settings["tts_precision"] == "fp32":
@@ -200,6 +203,25 @@ def tts_options(config: Config, report: Reporter | None = None) -> dict:
         if report:
             report(f"TTS Gemini API model={options['model']} voice={config.voice or 'Charon'}")
         return options
+    if config.tts == "voxcpm2":
+        refs, unlabelled = {}, []
+        for value in config.reference or []:
+            if "=" in value:
+                label, filename = value.split("=", 1)
+                if not label.strip() or not filename.strip() or label in refs:
+                    raise JellyDubError("VoxCPM2 references require unique nonempty LABEL=FILE entries")
+                refs[label] = Path(filename).expanduser()
+            else:
+                unlabelled.append(Path(value).expanduser())
+        if len(unlabelled) > 1:
+            raise JellyDubError("Use LABEL=FILE for multiple reference voices")
+        device = config.tts_device or config.device
+        if report:
+            report(f"TTS VoxCPM2 GGUF device={device} (auto requires GPU; no CPU fallback)")
+        return {"model": config.tts_model, "binary": config.voxcpm2_binary,
+                "style": config.tts_style, "device": device,
+                "timeout": config.voxcpm2_timeout, "speaker_refs": refs,
+                "reference": unlabelled[0] if unlabelled else None}
     device = config.tts_device or config.device
     if config.tts == "vieneu":
         from .devices import resolve_device
@@ -263,9 +285,11 @@ def dub(video: Path, srt: Path | None, config: Config, report: Reporter = print,
     report(f"Synthesizing {len(cues)} subtitle segments ({config.tts})…")
     provider = get_provider(config.tts, **options)
     try:
-        results, failures = synthesize_cues(cues, provider, config.cache_dir / "tts", workers=config.tts_workers,
+        results, failures = synthesize_cues(cues, provider, config.cache_dir / "tts", speech_plan=config.speech_plan, workers=config.tts_workers,
                                           on_progress=lambda n, count: report(f"TTS {n}/{count}"))
     finally:
+        for notice in getattr(provider, "speech_warnings", []):
+            report(f"Warning: TTS cue {notice['cue_index']} {notice['field']}: {notice['detail']}")
         if getattr(provider, "execution", {}).get("loaded"):
             report(f"TTS execution: {provider.execution}")
         provider.close()

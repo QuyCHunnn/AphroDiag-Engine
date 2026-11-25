@@ -166,6 +166,8 @@ uv run --no-sync jellydub preview --srt movie.vi.srt --config jellydub.gemini.to
 
 Cấu hình Gemini TTS: [hướng dẫn](docs/gemini-tts.md) và [profile mẫu](jellydub.gemini.toml). API key lấy từ biến môi trường, không lưu trong cấu hình.
 
+VoxCPM2 cục bộ: chọn `--tts voxcpm2`; hỗ trợ GGUF, reference theo nhân vật và chỉ dẫn cảm xúc theo câu. [Hướng dẫn GPU/thiết lập](docs/voxcpm2.md) · [profile máy hiện tại](jellydub.voxcpm2.toml). `auto`/`gpu` yêu cầu GPU và báo lỗi khi runtime fallback CPU.
+
 Kết quả tối ưu và giới hạn: [checkpoint](docs/checkpoints-2026-11-17.md), [kế hoạch và thực thi](docs/next-optimization-execution-2026-11-17.md), [review lỗi](docs/bug-review-2026-11-17.md). GenAI ASR và các thử nghiệm TTS GPU vẫn cần chọn tường minh; chưa đạt mục tiêu video 3 phút trong 40–60 giây.
 
 ## Backend và cấu hình
@@ -219,3 +221,5 @@ Mã nguồn nằm trong `src/jellydub`; `pipeline.py` điều phối xử lý fi
 Test mặc định bỏ qua nhóm `e2e` và `slow` cần mạng/model. Không commit thông tin đăng nhập, phim, model hay cache.
 
 **Giấy phép:** mã nguồn công bố theo MIT; thư viện, model và dịch vụ có điều khoản riêng. Xem [ghi chú giấy phép bên thứ ba](LICENSES-THIRD-PARTY.md).
+
+Speech plan chung cho Gemini, VieNeu và VoxCPM2: lời đọc riêng, `direction` theo từng câu, mẫu giọng và cảnh báo phần không hỗ trợ. [Hướng dẫn](docs/expressive-speech.md) · [JSON mẫu](examples/speech-plan.json).

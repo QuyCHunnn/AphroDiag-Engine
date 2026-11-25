@@ -35,6 +35,7 @@ class GeminiTTS(TTSProvider):
             raise ValueError("Invalid Gemini TTS model id")
         self.voice, self.model, self.style = voice, model, style
         self.speaker_voices = dict(speaker_voices or {})
+        self.speaker_styles = {}
         for value in [voice, *self.speaker_voices.values()]:
             if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", value):
                 raise ValueError("Invalid Gemini voice name")
@@ -42,23 +43,25 @@ class GeminiTTS(TTSProvider):
             raise ValueError("Gemini TTS style must be a string")
 
     def cache_id(self):
-        return "gemini-tts:v1:"+cache_key(self.model, self.voice, self.style, self.speaker_voices)
+        return "gemini-tts:v1:"+cache_key(self.model, self.voice, self.style, self.speaker_voices, self.speaker_styles)
 
     def cache_id_for(self, speaker):
-        return "gemini-tts:cue-v1:"+cache_key(self.model, self.speaker_voices.get(speaker, self.voice), self.style)
+        return "gemini-tts:cue-v1:"+cache_key(self.model, self.speaker_voices.get(speaker, self.voice),
+                                                    self.speaker_styles.get(speaker, self.style))
 
-    def _request(self, text, voice):
+    def _request(self, text, voice, style=None):
+        style = self.style if style is None else style
         if self.model.startswith("gemini-3.8-"):
             part = {"type": "text", "text": text}
-            if self.style:
-                part["annotations"] = [{"type": "speech_metadata", "style": self.style}]
+            if style:
+                part["annotations"] = [{"type": "speech_metadata", "style": style}]
             return "https://generativelanguage.googleapis.com/v1beta/interactions", {
                 "model": self.model, "input": [{"type": "user_input", "content": [part]}],
                 "response_format": {"type": "audio", "mime_type": "audio/wav"},
                 "generation_config": {"speech_config": [{"voice": voice}]}, "store": False,
             }
         # Earlier TTS models use GenerateContent and return headerless PCM.
-        prompt = (self.style+"\nRead only the following transcript:\n"+text) if self.style else text
+        prompt = (style+"\nRead only the following transcript:\n"+text) if style else text
         return f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent", {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"responseModalities": ["AUDIO"],
@@ -109,7 +112,7 @@ class GeminiTTS(TTSProvider):
         if not key:
             raise TTSError("Missing Gemini API key; set GEMINI_API_KEY")
         voice = self.speaker_voices.get(speaker, self.voice)
-        url, body = self._request(text, voice)
+        url, body = self._request(text, voice, self.speaker_styles.get(speaker, self.style))
         request = urllib.request.Request(url, data=json.dumps(body, ensure_ascii=False).encode(),
                                          headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST")
         try:

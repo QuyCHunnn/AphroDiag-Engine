@@ -1,0 +1,14 @@
+[
+  {
+    "index": 1,
+    "text_sub": "Thôi được rồi, anh nói đúng.",
+    "text_tts": "Thôi… được rồi. Anh nói đúng.",
+    "direction": {
+      "emotion": "buồn, miễn cưỡng chấp nhận",
+      "pace": "chậm",
+      "emphasis": ["được rồi", "anh nói đúng"],
+      "ending": "hạ giọng, nhỏ dần",
+      "nonverbal": "thở dài trước câu"
+    }
+  }
+]

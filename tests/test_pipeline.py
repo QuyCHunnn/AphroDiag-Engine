@@ -218,7 +218,7 @@ def test_workers_forwarded_to_synthesis(stages, monkeypatch, engine, workers):
     config.tts = engine
     config.tts_workers = workers
     seen = []
-    def synthesize(cues, provider, cache_dir, *, workers, on_progress):
+    def synthesize(cues, provider, cache_dir, *, workers, on_progress, speech_plan=None):
         seen.append(workers)
         on_progress(1, 1)
         return [SynthResult(1, Path('clip.wav'), 1)], []

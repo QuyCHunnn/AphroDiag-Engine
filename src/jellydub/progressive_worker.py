@@ -42,7 +42,7 @@ def main(stream):
                                       strict_context_cache=True)
         if provider is None:
             provider = get_provider(config.tts, **tts_options(config))
-        results, failures = synthesize_cues(cues, provider, config.cache_dir/"tts", workers=config.tts_workers)
+        results, failures = synthesize_cues(cues, provider, config.cache_dir/"tts", speech_plan=config.speech_plan, workers=config.tts_workers)
         if failures:
             raise JellyDubError(f"Progressive TTS failed: {[(c.index, e) for c, e in failures]}")
         speech_count += len(results)

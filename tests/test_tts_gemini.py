@@ -158,3 +158,27 @@ def test_retry_after_is_respected(monkeypatch, tmp_path):
     results, failures = synthesize_cues([Cue(1, 0, 1, 'Xin chào')], provider, tmp_path)
     assert results and not failures and len(calls) == 2
     assert any(7 <= delay <= 8 for delay in delays)
+
+
+def test_direction_preview_uses_separate_styles_and_reuses_cache(tmp_path, monkeypatch):
+    from jellydub.models import Cue
+    from jellydub.preview import create_preview
+    from jellydub.subtitles import write_srt
+    requests=[]
+    response(monkeypatch,modern(wav_bytes()),requests)
+    source=tmp_path/'source.srt'
+    write_srt([Cue(1,0,1,'Không!'),Cue(2,1,2,'Không!')],source)
+    plan=tmp_path/'speech.json'
+    plan.write_text(json.dumps([{'index':1,'direction':{'emotion':'angry'}},
+                                {'index':2,'direction':{'emotion':'sad'}}]))
+    config=Config(tts='gemini',speech_plan=str(plan),cache_dir=tmp_path/'cache')
+    output=create_preview(source,tmp_path/'preview',config,seconds=2,report=lambda message:None)
+    assert output.is_file() and len(requests)==2
+    parts=[json.loads(r.data)['input'][0]['content'][0] for r in requests]
+    assert {p['text'] for p in parts}=={'Không!'}
+    assert {p['annotations'][0]['style'] for p in parts}=={'Emotion: angry','Emotion: sad'}
+    review=json.loads((tmp_path/'preview/review.json').read_text())
+    assert review['speech_directions']['1']['requested']=={'emotion':'angry'}
+    assert review['speech_warnings']==[]
+    create_preview(source,tmp_path/'again',config,seconds=2,report=lambda message:None)
+    assert len(requests)==2

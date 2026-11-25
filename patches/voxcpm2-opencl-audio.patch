@@ -1,0 +1,351 @@
+diff --git a/ggml/src/ggml-opencl/CMakeLists.txt b/ggml/src/ggml-opencl/CMakeLists.txt
+index 446fb72..4e2c173 100644
+--- a/ggml/src/ggml-opencl/CMakeLists.txt
++++ b/ggml/src/ggml-opencl/CMakeLists.txt
+@@ -54,6 +54,7 @@ function(ggml_opencl_add_kernel KNAME)
+ endfunction()
+
+ set(GGML_OPENCL_KERNELS
++    voxcpm_audio
+     add
+     add_id
+     argsort
+diff --git a/ggml/src/ggml-opencl/ggml-opencl.cpp b/ggml/src/ggml-opencl/ggml-opencl.cpp
+index 751ec61..cac4cc0 100644
+--- a/ggml/src/ggml-opencl/ggml-opencl.cpp
++++ b/ggml/src/ggml-opencl/ggml-opencl.cpp
+@@ -535,6 +535,7 @@ struct ggml_backend_opencl_context {
+     cl_kernel kernel_sigmoid_f32, kernel_sigmoid_f16;
+     cl_kernel kernel_tri;
+     cl_kernel kernel_fill;
++    cl_kernel kernel_voxcpm_sum, kernel_voxcpm_sin, kernel_voxcpm_arange, kernel_voxcpm_conv_transpose;
+     cl_kernel kernel_clamp;
+     cl_kernel kernel_geglu, kernel_reglu, kernel_swiglu, kernel_swiglu_oai, kernel_geglu_erf, kernel_geglu_quick,
+               kernel_geglu_f16, kernel_reglu_f16, kernel_swiglu_f16, kernel_geglu_erf_f16, kernel_geglu_quick_f16;
+@@ -558,7 +559,7 @@ struct ggml_backend_opencl_context {
+     cl_kernel kernel_set_rows_f32_i64, kernel_set_rows_f32_i32, kernel_set_rows_f16_i64, kernel_set_rows_f16_i32;
+     cl_kernel kernel_rope_norm_f32, kernel_rope_norm_f16, kernel_rope_neox_f32, kernel_rope_neox_f16;
+     cl_kernel kernel_rope_multi_f32, kernel_rope_multi_f16, kernel_rope_vision_f32, kernel_rope_vision_f16;
+-    cl_kernel kernel_cpy_f16_f16, kernel_cpy_f16_f32, kernel_cpy_f32_f16, kernel_cpy_f32_f32, kernel_cpy_i32_i32;
++    cl_kernel kernel_cpy_f16_f16, kernel_cpy_f16_f32, kernel_cpy_f32_f16, kernel_cpy_f32_f32, kernel_cpy_i32_i32, kernel_cpy_f32_i32;
+     cl_kernel kernel_mul_mat_f32_f32;
+     cl_kernel kernel_mul_mat_f16_f16;
+     cl_kernel kernel_mul_mat_f16_f32_1row;
+@@ -1062,6 +1063,25 @@ static void load_cl_kernels(ggml_backend_opencl_context *backend_ctx) {
+         CL_CHECK(clReleaseProgram(prog));
+     }
+
++
++    // Local VoxCPM2 AudioVAE compatibility kernels.
++    {
++#ifdef GGML_OPENCL_EMBED_KERNELS
++        const std::string kernel_src {
++            #include "voxcpm_audio.cl.h"
++        };
++#else
++        const std::string kernel_src = read_file("voxcpm_audio.cl");
++#endif
++        cl_program prog = build_program_from_source(
++            backend_ctx->context, backend_ctx->device, kernel_src.c_str(), compile_opts);
++        CL_CHECK((backend_ctx->kernel_voxcpm_sin = clCreateKernel(prog, "kernel_voxcpm_sin", &err), err));
++        CL_CHECK((backend_ctx->kernel_voxcpm_sum = clCreateKernel(prog, "kernel_voxcpm_sum", &err), err));
++        CL_CHECK((backend_ctx->kernel_voxcpm_arange = clCreateKernel(prog, "kernel_voxcpm_arange", &err), err));
++        CL_CHECK((backend_ctx->kernel_voxcpm_conv_transpose = clCreateKernel(prog, "kernel_voxcpm_conv_transpose", &err), err));
++        CL_CHECK(clReleaseProgram(prog));
++    }
++
+     // fill
+     {
+ #ifdef GGML_OPENCL_EMBED_KERNELS
+@@ -1113,6 +1133,7 @@ static void load_cl_kernels(ggml_backend_opencl_context *backend_ctx) {
+         CL_CHECK((backend_ctx->kernel_cpy_f32_f16 = clCreateKernel(prog, "kernel_cpy_f32_f16", &err), err));
+         CL_CHECK((backend_ctx->kernel_cpy_f32_f32 = clCreateKernel(prog, "kernel_cpy_f32_f32", &err), err));
+         CL_CHECK((backend_ctx->kernel_cpy_i32_i32 = clCreateKernel(prog, "kernel_cpy_i32_i32", &err), err));
++        CL_CHECK((backend_ctx->kernel_cpy_f32_i32 = clCreateKernel(prog, "kernel_cpy_f32_i32", &err), err));
+         GGML_LOG_CONT(".");
+     }
+
+@@ -4884,6 +4905,7 @@ static bool ggml_opencl_supports_op(ggml_backend_dev_t dev, const struct ggml_te
+             switch (op->src[0]->type) {
+                 case GGML_TYPE_F32:
+                     switch (op->type) {
++                        case GGML_TYPE_I32:
+                         case GGML_TYPE_F16:
+                         case GGML_TYPE_F32:
+                             return true;
+@@ -4931,12 +4953,31 @@ static bool ggml_opencl_supports_op(ggml_backend_dev_t dev, const struct ggml_te
+                    (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16);
+         case GGML_OP_ADD_ID:
+             return op->src[0]->type == GGML_TYPE_F32;
++
++        case GGML_OP_SUM:
++        case GGML_OP_COS:
++        case GGML_OP_SIN:
++            return op->type == GGML_TYPE_F32 && op->src[0]->type == GGML_TYPE_F32 &&
++                   ggml_is_contiguous(op->src[0]) && ggml_is_contiguous(op);
++        case GGML_OP_ARANGE:
++            return op->type == GGML_TYPE_F32 && ggml_is_contiguous(op);
++        case GGML_OP_CONV_TRANSPOSE_1D:
++            return op->type == GGML_TYPE_F32 && op->src[0]->type == GGML_TYPE_F32 &&
++                   op->src[1]->type == GGML_TYPE_F32 && ggml_is_contiguous(op->src[0]) &&
++                   ggml_is_contiguous(op->src[1]) && ggml_is_contiguous(op) &&
++                   op->ne[2] == 1 && op->ne[3] == 1 && op->op_params[0] > 0 &&
++                   op->op_params[1] == 0 && op->op_params[2] == 1;
+         case GGML_OP_SQR:
+         case GGML_OP_SQRT:
+             return (op->src[0]->type == GGML_TYPE_F32 || op->src[0]->type == GGML_TYPE_F16) &&
+                     ggml_is_contiguous(op->src[0]);
+         case GGML_OP_UNARY:
+             switch (ggml_get_unary_op(op)) {
++                case GGML_UNARY_OP_ABS:
++                case GGML_UNARY_OP_STEP:
++                case GGML_UNARY_OP_ROUND:
++                    return op->src[0]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32 &&
++                           ggml_is_contiguous(op->src[0]) && ggml_is_contiguous(op);
+                 case GGML_UNARY_OP_GELU:
+                 case GGML_UNARY_OP_SILU:
+                 case GGML_UNARY_OP_RELU:
+@@ -9518,6 +9559,79 @@ static void ggml_cl_tri(ggml_backend_t backend, const ggml_tensor * src0, const
+     backend_ctx->enqueue_ndrange_kernel(kernel, 1, global_work_size, local_work_size, dst);
+ }
+
++
++static void ggml_cl_voxcpm_audio(ggml_backend_t backend, ggml_tensor * dst) {
++    auto * ctx = (ggml_backend_opencl_context *) backend->context;
++    auto * ed = (ggml_tensor_extra_cl *) dst->extra;
++    const cl_ulong od = ed->offset + dst->view_offs;
++    const int n = (int) ggml_nelements(dst);
++    cl_kernel kernel;
++    if (dst->op == GGML_OP_ARANGE) {
++        kernel = ctx->kernel_voxcpm_arange;
++        const float start = ggml_get_op_params_f32(dst, 0);
++        const float step = ggml_get_op_params_f32(dst, 2);
++        CL_CHECK(clSetKernelArg(kernel, 0, sizeof(cl_mem), &ed->data_device));
++        CL_CHECK(clSetKernelArg(kernel, 1, sizeof(cl_ulong), &od));
++        CL_CHECK(clSetKernelArg(kernel, 2, sizeof(int), &n));
++        CL_CHECK(clSetKernelArg(kernel, 3, sizeof(float), &start));
++        CL_CHECK(clSetKernelArg(kernel, 4, sizeof(float), &step));
++    } else {
++        auto * e0 = (ggml_tensor_extra_cl *) dst->src[0]->extra;
++        const cl_ulong o0 = e0->offset + dst->src[0]->view_offs;
++        if (dst->op == GGML_OP_SIN || dst->op == GGML_OP_COS || dst->op == GGML_OP_SUM || dst->op == GGML_OP_UNARY) {
++            kernel = ctx->kernel_voxcpm_sin;
++            CL_CHECK(clSetKernelArg(kernel, 0, sizeof(cl_mem), &e0->data_device));
++            CL_CHECK(clSetKernelArg(kernel, 1, sizeof(cl_ulong), &o0));
++            CL_CHECK(clSetKernelArg(kernel, 2, sizeof(cl_mem), &ed->data_device));
++            CL_CHECK(clSetKernelArg(kernel, 3, sizeof(cl_ulong), &od));
++            const int input_n = (int) ggml_nelements(dst->src[0]);
++            if (dst->op == GGML_OP_SUM) {
++                kernel = ctx->kernel_voxcpm_sum;
++                CL_CHECK(clSetKernelArg(kernel, 0, sizeof(cl_mem), &e0->data_device));
++                CL_CHECK(clSetKernelArg(kernel, 1, sizeof(cl_ulong), &o0));
++                CL_CHECK(clSetKernelArg(kernel, 2, sizeof(cl_mem), &ed->data_device));
++                CL_CHECK(clSetKernelArg(kernel, 3, sizeof(cl_ulong), &od));
++                CL_CHECK(clSetKernelArg(kernel, 4, sizeof(int), &input_n));
++                size_t global[] = {256}, local[] = {256};
++                ctx->enqueue_ndrange_kernel(kernel, 1, global, local, dst);
++                return;
++            }
++            int mode = dst->op == GGML_OP_COS ? 1 : 0;
++            if (dst->op == GGML_OP_UNARY) {
++                switch (ggml_get_unary_op(dst)) {
++                    case GGML_UNARY_OP_ABS: mode = 2; break;
++                    case GGML_UNARY_OP_STEP: mode = 3; break;
++                    case GGML_UNARY_OP_ROUND: mode = 4; break;
++                    default: GGML_ABORT("unsupported local unary op");
++                }
++            }
++            CL_CHECK(clSetKernelArg(kernel, 5, sizeof(int), &mode));
++            CL_CHECK(clSetKernelArg(kernel, 4, sizeof(int), &n));
++        } else {
++            auto * e1 = (ggml_tensor_extra_cl *) dst->src[1]->extra;
++            const cl_ulong o1 = e1->offset + dst->src[1]->view_offs;
++            kernel = ctx->kernel_voxcpm_conv_transpose;
++            CL_CHECK(clSetKernelArg(kernel, 0, sizeof(cl_mem), &e0->data_device));
++            CL_CHECK(clSetKernelArg(kernel, 1, sizeof(cl_ulong), &o0));
++            CL_CHECK(clSetKernelArg(kernel, 2, sizeof(cl_mem), &e1->data_device));
++            CL_CHECK(clSetKernelArg(kernel, 3, sizeof(cl_ulong), &o1));
++            CL_CHECK(clSetKernelArg(kernel, 4, sizeof(cl_mem), &ed->data_device));
++            CL_CHECK(clSetKernelArg(kernel, 5, sizeof(cl_ulong), &od));
++            const int dims[] = {(int) dst->src[0]->ne[0], (int) dst->src[0]->ne[1],
++                                (int) dst->src[0]->ne[2], (int) dst->src[1]->ne[0],
++                                (int) dst->ne[0], dst->op_params[0]};
++            for (int i = 0; i < 6; ++i) {
++                CL_CHECK(clSetKernelArg(kernel, 6+i, sizeof(int), &dims[i]));
++            }
++            size_t global[] = {(size_t) dst->ne[0], (size_t) dst->ne[1]};
++            ctx->enqueue_ndrange_kernel(kernel, 2, global, nullptr, dst);
++            return;
++        }
++    }
++    size_t global[] = {(size_t) n};
++    ctx->enqueue_ndrange_kernel(kernel, 1, global, nullptr, dst);
++}
++
+ static void ggml_cl_fill(ggml_backend_t backend, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+     GGML_ASSERT(dst);
+     GGML_ASSERT(dst->extra);
+@@ -16121,6 +16235,9 @@ static void ggml_cl_cpy(ggml_backend_t backend, const ggml_tensor * src0, const
+     switch (src0t) {
+         case GGML_TYPE_F32:
+             switch (src1t) {
++                case GGML_TYPE_I32:
++                    kernel = backend_ctx->kernel_cpy_f32_i32;
++                    break;
+                 case GGML_TYPE_F16:
+                     kernel = backend_ctx->kernel_cpy_f32_f16;
+                     break;
+@@ -17430,6 +17547,14 @@ bool ggml_cl_compute_forward(ggml_backend_t backend, struct ggml_tensor * tensor
+             }
+             func = ggml_cl_sub;
+             break;
++        case GGML_OP_COS:
++        case GGML_OP_SUM:
++        case GGML_OP_SIN:
++        case GGML_OP_ARANGE:
++        case GGML_OP_CONV_TRANSPOSE_1D:
++            if (!ggml_opencl_supports_op(backend->device, tensor)) return false;
++            ggml_cl_voxcpm_audio(backend, tensor);
++            return true;
+         case GGML_OP_SQR:
+             if (!any_on_device) {
+                 return false;
+@@ -17450,6 +17575,12 @@ bool ggml_cl_compute_forward(ggml_backend_t backend, struct ggml_tensor * tensor
+             break;
+         case GGML_OP_UNARY:
+             switch (ggml_get_unary_op(tensor)) {
++                case GGML_UNARY_OP_ABS:
++                case GGML_UNARY_OP_STEP:
++                case GGML_UNARY_OP_ROUND:
++                    if (!ggml_opencl_supports_op(backend->device, tensor)) return false;
++                    ggml_cl_voxcpm_audio(backend, tensor);
++                    return true;
+                 case GGML_UNARY_OP_GELU:
+                     if (!any_on_device) {
+                         return false;
+diff --git a/ggml/src/ggml-opencl/kernels/cpy.cl b/ggml/src/ggml-opencl/kernels/cpy.cl
+index 820aa53..419f672 100644
+--- a/ggml/src/ggml-opencl/kernels/cpy.cl
++++ b/ggml/src/ggml-opencl/kernels/cpy.cl
+@@ -227,3 +227,48 @@ kernel void kernel_cpy_i32_i32(
+         dst_data[i00] = src[0];
+     }
+ }
++
++kernel void kernel_cpy_f32_i32(
++        global float * src0,
++        ulong offset0,
++        global int * dst,
++        ulong offsetd,
++        int ne00,
++        int ne01,
++        int ne02,
++        int ne03,
++        ulong nb00,
++        ulong nb01,
++        ulong nb02,
++        ulong nb03,
++        int ne0,
++        int ne1,
++        int ne2,
++        int ne3,
++        ulong nb0,
++        ulong nb1,
++        ulong nb2,
++        ulong nb3
++) {
++    src0 = (global float*)((global char*)src0 + offset0);
++    dst = (global int*)((global char*)dst + offsetd);
++
++    int i03 = get_group_id(2);
++    int i02 = get_group_id(1);
++    int i01 = get_group_id(0);
++
++    int n = i03*ne02*ne01*ne00 + i02*ne01*ne00 + i01*ne00;
++
++    int i3 = n / (ne2*ne1*ne0);
++    int i2 = (n - i3*ne2*ne1*ne0) / (ne1*ne0);
++    int i1 = (n - i3*ne2*ne1*ne0 - i2*ne1*ne0) / ne0;
++    int i0 = (n - i3*ne2*ne1*ne0 - i2*ne1*ne0 - i1*ne0);
++
++    global int * dst_data = (global int *) ((global char *) dst + i3*nb3 + i2*nb2 + i1*nb1 + i0*nb0);
++
++    for (int i00 = get_local_id(0); i00 < ne00; i00 += get_local_size(0)) {
++        global const float * src = (global float *)((global char *) src0 + i03*nb03 + i02*nb02 + i01*nb01 + i00*nb00);
++
++        dst_data[i00] = convert_int_rtz(src[0]);
++    }
++}
+diff --git a/ggml/src/ggml-opencl/kernels/voxcpm_audio.cl b/ggml/src/ggml-opencl/kernels/voxcpm_audio.cl
+new file mode 100644
+--- /dev/null
++++ b/ggml/src/ggml-opencl/kernels/voxcpm_audio.cl
+@@ -0,0 +1,68 @@
++
++// F32 contiguous paths used by VoxCPM2 AudioVAE. No host computation.
++kernel void kernel_voxcpm_sin(global const float *x, ulong xo,
++                              global float *y, ulong yo, int n, int mode) {
++    size_t i = get_global_id(0);
++    if (i < n) {
++        x = (global const float *)((global const char *)x + xo);
++        y = (global float *)((global char *)y + yo);
++        float v = x[i];
++        switch (mode) {
++            case 0: y[i] = sin(v); break;
++            case 1: y[i] = cos(v); break;
++            case 2: y[i] = fabs(v); break;
++            case 3: y[i] = v > 0.0f ? 1.0f : 0.0f; break;
++            case 4: y[i] = round(v); break;
++        }
++    }
++}
++kernel void kernel_voxcpm_arange(global float *y, ulong yo, int n, float start, float step) {
++    size_t i = get_global_id(0);
++    if (i < n) {
++        y = (global float *)((global char *)y + yo);
++        y[i] = start + step * (float)i;
++    }
++}
++// Weights [kernel, Cout, Cin], input [time, Cin], output [time_out, Cout].
++// One work item owns one output; gather avoids floating-point atomics.
++kernel void kernel_voxcpm_conv_transpose(global const float *w, ulong wo,
++                                         global const float *x, ulong xo,
++                                         global float *y, ulong yo,
++                                         int ksize, int cout, int cin,
++                                         int tin, int tout, int stride) {
++    int t = get_global_id(0);
++    int co = get_global_id(1);
++    if (t >= tout || co >= cout) return;
++    w = (global const float *)((global const char *)w + wo);
++    x = (global const float *)((global const char *)x + xo);
++    y = (global float *)((global char *)y + yo);
++    float value = 0.0f;
++    // Only kernel positions with the same remainder as t can contribute.
++    for (int k = t % stride; k < ksize; k += stride) {
++        int ti = (t-k)/stride;
++        if (ti < 0 || ti >= tin || t < k) continue;
++        float dot = 0.0f;
++        for (int ci = 0; ci < cin; ++ci) {
++            dot += x[ti + tin*ci] * w[k + ksize*(co + cout*ci)];
++        }
++        value += dot;
++    }
++    y[t + tout*co] = value;
++}
++
++kernel void kernel_voxcpm_sum(global const float *x, ulong xo,
++                              global float *y, ulong yo, int n) {
++    x = (global const float *)((global const char *)x + xo);
++    y = (global float *)((global char *)y + yo);
++    local float partial[256];
++    int lid = get_local_id(0);
++    float acc = 0.0f;
++    for (int i = lid; i < n; i += 256) acc += x[i];
++    partial[lid] = acc;
++    barrier(CLK_LOCAL_MEM_FENCE);
++    for (int offset = 128; offset > 0; offset /= 2) {
++        if (lid < offset) partial[lid] += partial[lid+offset];
++        barrier(CLK_LOCAL_MEM_FENCE);
++    }
++    if (lid == 0) y[0] = partial[0];
++}

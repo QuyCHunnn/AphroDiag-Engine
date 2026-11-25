@@ -101,12 +101,15 @@ class _AdaptiveLimiter:
 def synthesize_cues(
     cues: list[Cue], provider: TTSProvider, cache_dir: Path, retries: int = 4,
     on_progress: Callable[[int, int], None] | None = None, *, workers: int = 1,
+    speech_plan: str | None = None,
 ) -> tuple[list[SynthResult], list[tuple[Cue, str]]]:
     """Synthesize unique lines concurrently, returning results/failures in cue order.
 
     Progress runs only on the calling thread, once per completed cue (including
     duplicates and non-speech cues). Provider concurrency defaults to one for safety.
     """
+    from ..speech import prepare_speech
+    spoken = prepare_speech(cues, provider, speech_plan)
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     cap = max(1, min(workers, getattr(provider, "max_concurrency", 1)))
@@ -123,8 +126,8 @@ def synthesize_cues(
                 on_progress(completed, len(cues))
 
     for cue in cues:
-        if _has_speakable_content(cue.text):
-            groups.setdefault((cue.text, cue.speaker), []).append(cue)
+        if _has_speakable_content(spoken[cue.index][0]):
+            groups.setdefault(spoken[cue.index], []).append(cue)
         else:
             progress(1)
 
@@ -209,9 +212,9 @@ def synthesize_cues(
 
     results, failures = [], []
     for cue in cues:
-        if not _has_speakable_content(cue.text):
+        if not _has_speakable_content(spoken[cue.index][0]):
             continue
-        target, measured, error = outcomes[(cue.text, cue.speaker)]
+        target, measured, error = outcomes[spoken[cue.index]]
         if error is None:
             results.append(SynthResult(cue.index, target, measured))
         else:

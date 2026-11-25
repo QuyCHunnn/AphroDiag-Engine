@@ -23,6 +23,11 @@ class Cue:
     text: str
     speaker: str | None = None  # manual speaker / voice-profile label (VieNeu)
 
+    text_tts: str | None = None
+    emotion: str | None = None
+    ref_audio: str | None = None
+    direction: dict | None = None
+
     @property
     def duration(self) -> float:
         return max(0.0, self.end - self.start)
