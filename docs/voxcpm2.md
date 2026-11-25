@@ -56,7 +56,14 @@ Runtime đã kiểm tra: [tc-mb/llama.cpp-omni](https://github.com/tc-mb/llama.c
 
 Bản upstream ở commit này thiếu các phép toán OpenCL mà VoxCPM2 cần. Bản vá cục bộ [voxcpm2-opencl-audio.patch](../patches/voxcpm2-opencl-audio.patch) bổ sung đường F32 contiguous cho SIN, COS, ARANGE, SUM, ABS, STEP, ROUND, transposed convolution 1D và chuyển F32 sang I32. Không gửi contribution lên upstream. Giữ patch ngoài thư mục artifact để có thể tái tạo build.
 
-Trên host có OpenCL headers/loader và CMake, Ninja, C++ compiler:
+Trên Ubuntu/WSL, chuẩn bị công cụ build và kiểm tra driver trước. Các gói dưới đây không tự cài/sửa driver Intel; `clinfo -l` phải thấy Intel Graphics:
+
+```sh
+sudo apt install build-essential cmake ninja-build git ocl-icd-opencl-dev opencl-headers clinfo
+clinfo -l
+```
+
+Trên host có OpenCL headers/loader và CMake, Ninja, C++ compiler, chạy từ thư mục gốc repo:
 
 ```sh
 git clone https://github.com/tc-mb/llama.cpp-omni.git runtime/llama.cpp-omni
@@ -70,6 +77,32 @@ cmake -S runtime/llama.cpp-omni -B runtime/voxcpm2-build -G Ninja \
   -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_UI=OFF
 cmake --build runtime/voxcpm2-build --target voxcpm2-cli -j 2
 ```
+
+Tải hai file model đã kiểm tra, tổng khoảng 3,55 GB. Model không có sẵn trong Git:
+
+```sh
+uvx --from huggingface-hub hf download DennisHuang648/VoxCPM2-GGUF \
+  VoxCPM2-BaseLM-Q8_0.gguf VoxCPM2-Acoustic-F16.gguf \
+  --revision 169f64d8b98bbaab1761e4ca3a83e6af653456cc \
+  --local-dir models/voxcpm2
+```
+
+Tạo `tts.voxcpm2.toml` cho máy vừa build:
+
+```toml
+[jellydub]
+tts = "voxcpm2"
+tts_model = "models/voxcpm2"
+voxcpm2_binary = "runtime/voxcpm2-build/bin/voxcpm2-cli"
+voxcpm2_timeout = 600
+tts_device = "gpu"
+tts_style = "Speak Vietnamese naturally. Follow each line's acting direction."
+reference = ["refs/peter.wav"]
+tts_workers = 1
+mix = "dub-only"
+```
+
+Chuẩn bị `refs/peter.wav` dài 3–8 giây, hoặc bỏ `reference` nếu chưa có mẫu. Thêm `speech_plan = "speech.json"` khi đã chuẩn bị chỉ dẫn. Preview/dub bằng `--config tts.voxcpm2.toml`; không cần profile `artifacts` của máy thử.
 
 Kiểm tra số các kernel GPU sau build (26 ca, đối chiếu phép tính tham chiếu trên CPU):
 
