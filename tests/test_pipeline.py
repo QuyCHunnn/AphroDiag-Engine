@@ -697,79 +697,63 @@ def test_search_online_does_not_override_no_download(subtitle_sources, monkeypat
     p.subs(video, config, report=lambda s: None)
 
 
-@pytest.mark.parametrize('language,translation', [('en', 'performed'), ('vi', 'not_required')])
-def test_auto_exports_both_formats_and_reports_discovered_subtitles(stages, monkeypatch, language, translation):
-    video, srt, config, _ = stages
-    config.source_lang = 'auto'
-    config.mix = 'voiceover'
-    config.mp4 = True
-    config.audio = True
-    monkeypatch.setattr(p, '_resolve_subtitle', lambda *a, **kw: (srt, language))
-    monkeypatch.setattr(p, 'probe', _auto_probe)
-    called = []
-
-    def fake_dub(source, subtitle, settings, report, **kwargs):
-        called.append((subtitle, settings, kwargs.get('skip_timing_check', False)))
-        if language == 'en':
-            logging.getLogger().warning('Synthetic translation warning')
-        outputs = p.output_paths(source, settings.out_dir)
-        for path in outputs.values():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b'output')
-        return outputs
-
-    monkeypatch.setattr(p, 'dub', fake_dub)
-    outputs = p.auto(video, None, config, report=lambda message: None)
-
-    assert outputs['mkv'].is_file() and outputs['mp4'].is_file()
-    assert outputs['report'].is_file()
-    assert called[0][0] == srt and called[0][2]
-    assert called[0][1].source_lang == language
-    assert called[0][1].mkv and called[0][1].mp4 and called[0][1].mix == 'voiceover'
-    report_data = json.loads(outputs['report'].read_text())
-    assert report_data['status'] == 'completed'
-    assert report_data['subtitle_source'] == 'discovered'
-    assert report_data['translation'] == translation
-    assert any(stream['language'] == 'vie' for stream in report_data['outputs']['mp4']['streams'])
-    if language == 'en':
-        assert any('Synthetic translation warning' in warning for warning in report_data['pipeline_warnings'])
-    else:
-        assert not report_data['pipeline_warnings']
-
-
-def test_auto_transcribes_when_no_subtitle_is_usable(stages, monkeypatch):
-    video, _, config, _ = stages
-    config.mix = 'voiceover'
-
-    def missing(*args, **kwargs):
-        raise p._NoSubtitleError('none found')
-
-    monkeypatch.setattr(p, '_resolve_subtitle', missing)
-    monkeypatch.setattr(p, 'transcribe_video', lambda *args, **kwargs: ([Cue(1, 0, 2, 'Xin chào')], 'vi'))
-    def write_transcription(cues, path):
+@pytest.fixture
+def auto_transcript(stages, monkeypatch):
+    original_resolve = p._resolve_subtitle
+    def resolve(video, srt, *args, **kwargs):
+        assert srt is not None, 'auto must not search subtitles'
+        return original_resolve(video, srt, *args, **kwargs)
+    monkeypatch.setattr(p, '_resolve_subtitle', resolve)
+    monkeypatch.setattr(p, 'transcribe_video', lambda *a, **kw: ([Cue(1, 0, 2, 'Hello')], 'en'))
+    def write(cues, path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('transcribed')
-    monkeypatch.setattr(p, 'write_srt', write_transcription)
+    monkeypatch.setattr(p, 'write_srt', write)
     monkeypatch.setattr(p, 'probe', _auto_probe)
-    called = []
 
+
+def test_auto_exports_both_formats_from_video_only(stages, auto_transcript, monkeypatch):
+    video, _, config, _ = stages
+    config.mix = 'replace'
+    config.pipeline_mode = 'overlap'
+    config.mp4 = config.audio = True
+    called = []
     def fake_dub(source, subtitle, settings, report, **kwargs):
         called.append((subtitle, settings, kwargs.get('skip_timing_check', False)))
+        logging.getLogger().warning('Synthetic translation warning')
         outputs = p.output_paths(source, settings.out_dir)
         for path in outputs.values():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b'output')
         return outputs
-
     monkeypatch.setattr(p, 'dub', fake_dub)
     outputs = p.auto(video, None, config, report=lambda message: None)
-
+    assert outputs['mkv'].is_file() and outputs['mp4'].is_file()
     assert called[0][0].is_file() and called[0][2]
-    assert called[0][1].source_lang == 'vi'
-    report_data = json.loads(outputs['report'].read_text())
-    assert report_data['subtitle_source'] == 'asr'
-    assert report_data['source_language'] == 'vi'
-    assert report_data['status'] == 'completed'
+    settings = called[0][1]
+    assert settings.source_lang == 'en' and settings.mix == 'dub-only'
+    assert settings.pipeline_mode == 'sequential' and not settings.download
+    assert settings.mkv and settings.mp4
+    data = json.loads(outputs['report'].read_text())
+    assert data['status'] == 'completed' and data['subtitle_source'] == 'asr'
+    assert data['translation'] == 'performed'
+    assert any('Synthetic translation warning' in warning for warning in data['pipeline_warnings'])
+
+
+def test_auto_rejects_non_english_before_dubbing(stages, auto_transcript, monkeypatch):
+    video, _, config, _ = stages
+    monkeypatch.setattr(p, 'transcribe_video', lambda *a, **kw: ([Cue(1, 0, 2, 'Xin chào')], 'vi'))
+    monkeypatch.setattr(p, 'dub', lambda *a, **kw: pytest.fail('must reject before TTS'))
+    with pytest.raises(JellyDubError, match='English video only'):
+        p.auto(video, None, config)
+    data = json.loads(next((config.cache_dir / 'reports').glob('*.json')).read_text())
+    assert data['status'] == 'failed' and data['source_language'] == 'vi'
+
+
+def test_auto_rejects_external_subtitles(stages):
+    video, srt, config, _ = stages
+    with pytest.raises(JellyDubError, match='use dub'):
+        p.auto(video, srt, config)
 
 
 def test_auto_subtitle_qc_marks_overlap_and_long_text(stages, monkeypatch, tmp_path):
@@ -790,11 +774,9 @@ def test_auto_warning_filter_ignores_ranking_metadata_and_asr_reference_gap():
     assert p._pipeline_warnings(messages, asr=True) == messages[2:]
 
 
-def test_auto_retries_transient_tts_failure_once(stages, monkeypatch):
+def test_auto_retries_transient_tts_failure_once(stages, auto_transcript, monkeypatch):
     video, srt, config, _ = stages
     config.mix = 'voiceover'
-    monkeypatch.setattr(p, '_resolve_subtitle', lambda *a, **kw: (srt, 'vi'))
-    monkeypatch.setattr(p, 'probe', _auto_probe)
     attempts = []
 
     def fake_dub(source, subtitle, settings, report, **kwargs):
@@ -828,10 +810,11 @@ def test_default_export_is_mkv_srt_from_lossless_mix(stages, monkeypatch):
     assert {path.suffix for path in config.out_dir.iterdir()} == {'.mkv', '.srt'}
 
 
-def test_auto_keeps_report_internal_and_optional_exports_off(stages, monkeypatch):
+def test_auto_keeps_report_internal_and_optional_exports_off(stages, auto_transcript, monkeypatch):
     video, srt, config, _ = stages
+    monkeypatch.setattr(p, '_translated', lambda srt, *a: srt)
     monkeypatch.setattr(p, 'probe', _auto_probe)
-    outputs = p.auto(video, srt, config, report=lambda message: None)
+    outputs = p.auto(video, None, config, report=lambda message: None)
     assert set(outputs) == {'mkv', 'srt', 'report'}
     assert outputs['report'].is_relative_to(config.cache_dir)
     assert {path.suffix for path in config.out_dir.iterdir()} == {'.mkv', '.srt'}
@@ -839,9 +822,8 @@ def test_auto_keeps_report_internal_and_optional_exports_off(stages, monkeypatch
 
 
 @pytest.mark.parametrize('error', [KeyError('duration'), ValueError('bad duration'), RuntimeError('unexpected probe failure')])
-def test_auto_records_unexpected_failures(stages, monkeypatch, error):
+def test_auto_records_unexpected_failures(stages, auto_transcript, monkeypatch, error):
     video, srt, config, _ = stages
-    monkeypatch.setattr(p, '_resolve_subtitle', lambda *a: (srt, 'vi'))
     def fail(*a, **kw):
         raise error
     monkeypatch.setattr(p, 'dub', fail)
@@ -851,3 +833,22 @@ def test_auto_records_unexpected_failures(stages, monkeypatch, error):
     assert len(reports) == 1
     data = json.loads(reports[0].read_text())
     assert data['status'] == 'failed' and str(error) in data['error']
+
+
+@pytest.mark.parametrize('streams,message', [
+    ([{'codec_type': 'audio'}], 'video stream'),
+    ([{'codec_type': 'video'}], 'audio track'),
+])
+def test_auto_rejects_incomplete_media_before_asr(stages, monkeypatch, streams, message):
+    video, _, config, _ = stages
+    monkeypatch.setattr(p, 'probe', lambda path: {'streams': streams})
+    monkeypatch.setattr(p, '_asr_subtitle', lambda *a: pytest.fail('must reject before ASR'))
+    with pytest.raises(JellyDubError, match=message):
+        p.auto(video, None, config)
+
+
+def test_auto_rejects_asr_backend_without_language_detection(stages):
+    video, _, config, _ = stages
+    config.asr_backend = 'genai'
+    with pytest.raises(JellyDubError, match='requires language detection'):
+        p.auto(video, None, config)

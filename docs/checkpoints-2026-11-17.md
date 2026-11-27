@@ -1,5 +1,7 @@
 # Tiếp tục tối ưu pipeline — 2026-11-17
 
+> Tài liệu lịch sử trước khi tinh gọn quy trình. `auto` hiện chỉ nhận video tiếng Anh, tự chép lời, dùng `dub-only` và chạy tuần tự; không nhận `--srt`, `--source-lang`, `--mix`, `--pipeline-mode`. Dùng [hướng dẫn CLI hiện tại](cli-guide.md) để vận hành.
+
 Theo CP1–CP6 trong `pipeline-bottlenecks-2026-11-16.md` (khác bộ checkpoint đầu ra MKV cũ trong `optimization-plan.md`). Người dùng chọn tiếp tục tối ưu giọng VieNeu hiện tại; lựa chọn này không được hiểu là đã nghiệm thu diễn xuất/phát âm.
 
 Mục tiêu bổ sung: **video 180 giây trong 40–60 giây trên GPU**, ưu tiên GPU tầm thấp/trung và dùng **Iris Xe hiện tại làm đối chứng chính**. Người dùng cho phép đổi kiến trúc engine/pipeline. Mục tiêu này **chưa đạt**. Không tính lượt reuse cache thành benchmark video mới; thời gian tải model, nạp/compile và warm worker cần báo riêng.

@@ -18,16 +18,14 @@ Script không tự cài driver, restart WSL hoặc gỡ package ngoài profile. 
 uv run --no-sync jellydub auto "video.mp4" --out-dir output
 ```
 
-Có SRT khớp video, có thể truyền thêm:
+Chỉ đưa video tiếng Anh vào. Engine tự nhận dạng ngôn ngữ, chép lời trực tiếp từ video, dịch rồi tạo giọng; dừng nếu ASR trả về ngôn ngữ khác tiếng Anh. Không cần SRT hoặc nghe thử. Không tìm/tải phụ đề có sẵn. Nhận dạng ngôn ngữ có thể sai với video ít lời hoặc nhiều ngôn ngữ.
 
-```bash
-uv run --no-sync jellydub auto "video.mp4" --srt "video.vi.srt" --out-dir output
-```
-
-Không có SRT thì tự chép lời. Đầu vào hỗ trợ tiếng Anh và tiếng Việt; tiếng Anh được dịch trước khi tạo giọng. Mặc định dùng voiceover và nhận hai file:
+`auto` chạy tuần tự, mặc định một câu TTS mỗi lượt. Track Việt chỉ có giọng mới (`dub-only`), không tách nhạc nền/hiệu ứng. Nhận hai file:
 
 - `video.AI-Dub.vi.mkv`: giữ video gốc, thêm audio Việt và SRT Việt bật/tắt được.
 - `video.vi.srt`: phụ đề Việt rời.
+
+`auto` không còn nhận `--srt`, `--source-lang`, `--mix`, `--pipeline-mode`. Các giá trị source/mix/pipeline trong TOML được thay bằng chế độ tự nhận dạng ngôn ngữ, chỉ giọng mới và xử lý tuần tự. Muốn dùng SRT riêng hoặc chế độ trộn khác, dùng lệnh kỹ thuật `dub`; các lựa chọn đó không thuộc luồng chính.
 
 MKV giữ các track nguồn và đánh dấu audio/phụ đề Việt mặc định. Nếu thiết lập riêng của player chọn track khác, trong VLC chọn track **Tiếng Việt (AI Dub)** và phụ đề **Phụ đề tiếng Việt**. File xuất xem được độc lập, không cần Jellyfin/TinyTV/server hoặc giữ engine chạy.
 
@@ -40,7 +38,7 @@ MKV giữ các track nguồn và đánh dấu audio/phụ đề Việt mặc đ�
 - Cache mặc định `~/.cache/jellydub`. Giọng và clip đã căn thời gian dùng chung theo nội dung/tham số; đổi thư mục xuất không tạo lại giọng. Cache/QC kiểm tra hash trước khi tái sử dụng.
 - Lỗi TTS: lệnh auto thử lại một lần; có thể chạy lại cùng lệnh để tiếp tục các câu chưa xong.
 
-Log/báo cáo JSON nằm trong cache, đường dẫn in ở cuối. Báo cáo ASR ghi backend/device thực thi và fallback. `completed` chỉ xác nhận xử lý; `needs_review` chỉ ra nội dung/timing cần xem lại. ASR và bản dịch vẫn cần duyệt khi dùng để bàn giao chính thức.
+Log/báo cáo JSON nằm trong cache, đường dẫn in ở cuối. Báo cáo ASR ghi backend/device thực thi và fallback. `completed` chỉ xác nhận xử lý; `needs_review` chỉ ra nội dung/timing cần xem lại. Không có bước duyệt chặn quy trình; kiểm tra tự động không xác nhận được ý nghĩa bản dịch hoặc chất lượng giọng cảm nhận.
 
 ## Tuỳ chọn nâng cao
 
@@ -53,7 +51,7 @@ uv run --no-sync jellydub auto video.mp4 --asr-device cpu --out-dir output
 uv run --no-sync jellydub auto video.mp4 --mp4 --audio --out-dir output
 ```
 
-VieNeu là TTS mặc định, chạy cục bộ sau lần tải model đầu tiên. Gemini chỉ dùng khi chọn `--tts gemini` hoặc profile Gemini; xem [README](../README.md#chọn-vieneu-hoặc-gemini-tts). Edge-TTS vẫn có thể chọn riêng và cần mạng cho câu chưa cache. Lần đầu cần mạng để tải model; không đưa API key vào repo nếu chọn translator cần key. Nguồn/đầu ra cũ không bị tự xóa. Dùng thư mục output mới nếu muốn nhìn rõ chỉ các file của lần chạy mới; engine không xóa MP4/MP3 cũ có sẵn trong thư mục.
+VieNeu là TTS mặc định, chạy cục bộ sau lần tải model đầu tiên. Gemini chỉ dùng khi chọn `--tts gemini` hoặc profile Gemini; xem [hướng dẫn Gemini](gemini-tts.md). Edge-TTS vẫn có thể chọn riêng và cần mạng cho câu chưa cache. Lần đầu cần mạng để tải model; không đưa API key vào repo nếu chọn translator cần key. Nguồn/đầu ra cũ không bị tự xóa. Dùng thư mục output mới nếu muốn nhìn rõ chỉ các file của lần chạy mới; engine không xóa MP4/MP3 cũ có sẵn trong thư mục.
 
 ## Bằng chứng triển khai
 

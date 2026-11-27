@@ -94,13 +94,9 @@ def dub(
 @app.command()
 def auto(
     video: Path,
-    srt: Annotated[Path | None, typer.Option("--srt", help="Optional matching English or Vietnamese SRT")] = None,
-    source_lang: Annotated[str | None, typer.Option(help="auto (default), en or vi")] = None,
-    asr_model: Annotated[str | None, typer.Option(help="Whisper model used when no usable subtitle is found")] = None,
+    asr_model: Annotated[str | None, typer.Option(help="Whisper model for English video transcription")] = None,
     asr_device: Annotated[str | None, typer.Option(help="auto, cpu, cuda (NVIDIA), gpu (Intel)")] = None,
-    asr_backend: Annotated[str | None, typer.Option(help="auto, faster-whisper, openvino or experimental genai")] = None,
-    asr_python: Annotated[str | None, typer.Option(help="Isolated interpreter for experimental GenAI ASR")] = None,
-    pipeline_mode: Annotated[str | None, typer.Option(help="sequential or experimental overlap (ASR + translation/TTS)")] = None,
+    asr_backend: Annotated[str | None, typer.Option(help="auto, faster-whisper or openvino")] = None,
     asr_beam_size: Annotated[int | None, typer.Option(min=1, help="Whisper beam size (default 5)")] = None,
     translator: Annotated[str | None, typer.Option(help="opus-mt, gemini, agy or agy-stream")] = None,
     translator_model: Annotated[str | None, typer.Option()] = None,
@@ -110,27 +106,24 @@ def auto(
     tts_workers: Annotated[int | None, typer.Option(min=1)] = None,
     tts_precision: Annotated[str | None, typer.Option(help="fp32 or experimental CPU int8 (VieNeu)")] = None,
     voice: Annotated[str | None, typer.Option()] = None,
-    mix: Annotated[str | None, typer.Option(help="dub-only, voiceover or replace")] = None,
     mp4: Annotated[bool | None, typer.Option("--mp4/--no-mp4", help="Opt in to burned-in MP4 export")] = None,
     audio: Annotated[bool | None, typer.Option("--audio/--no-audio", help="Opt in to standalone MP3 export")] = None,
     out_dir: Annotated[Path | None, typer.Option()] = None,
     cache_dir: Annotated[Path | None, typer.Option()] = None,
     config: Annotated[Path | None, typer.Option(help="TOML configuration file")] = None,
-    device: Annotated[str | None, typer.Option(help="Device for local translation/separation")] = None,
+    device: Annotated[str | None, typer.Option(help="Device for local translation")] = None,
     tts_device: Annotated[str | None, typer.Option(help="TTS device: auto, cpu, gpu (VoxCPM2) or cuda")] = None,
     translate_device: Annotated[str | None, typer.Option(help="OPUS device: auto, cpu or cuda")] = None,
 ):
-    """Automatically find or transcribe subtitles, dub the video, and export MKV/SRT by default."""
+    """Dub an English video directly to Vietnamese MKV/SRT without preview or subtitle input."""
     def run():
-        options = dict(source_lang=source_lang, asr_model=asr_model, asr_device=asr_device,
-                       asr_backend=asr_backend, asr_python=asr_python, pipeline_mode=pipeline_mode, asr_beam_size=asr_beam_size,
+        options = dict(source_lang="auto", mix="dub-only", pipeline_mode="sequential", asr_model=asr_model, asr_device=asr_device,
+                       asr_backend=asr_backend, asr_beam_size=asr_beam_size,
                        translator=translator, translator_model=translator_model, tts=tts, tts_model=tts_model, tts_style=tts_style,
-                       tts_workers=tts_workers, tts_precision=tts_precision, voice=voice, mix=mix, mp4=mp4, audio=audio, out_dir=out_dir,
+                       tts_workers=tts_workers if tts_workers is not None else 1, tts_precision=tts_precision, voice=voice, mp4=mp4, audio=audio, out_dir=out_dir,
                        cache_dir=cache_dir, device=device, tts_device=tts_device,
                        translate_device=translate_device)
-        if mix is None and config is None:
-            options["mix"] = "voiceover"
-        outputs = pipeline.auto(video, srt, load_config(config, **options), report=_report)
+        outputs = pipeline.auto(video, None, load_config(config, **options), report=_report)
         for path in outputs.values():
             typer.echo(str(path))
     _run(run)

@@ -361,15 +361,20 @@ def dub(video: Path, srt: Path | None, config: Config, report: Reporter = print,
 
 
 def auto(video: Path, srt: Path | None, config: Config, report: Reporter = print) -> dict[str, Path]:
-    """Find or transcribe subtitles, export MKV/SRT by default, and retain QC internally."""
-    config = replace(config, subs="auto")
+    """Transcribe English video and export Vietnamese MKV/SRT without review gates."""
+    if srt is not None:
+        raise JellyDubError("auto accepts only an English video; use dub for an external SRT")
+    config = replace(config, source_lang="auto", subs="auto", mix="dub-only",
+                     pipeline_mode="sequential", download=False, search_online=False,
+                     fallback_voiceover=False)
     config.validate()
+    if config.asr_backend == "genai":
+        raise JellyDubError("auto requires language detection; use the auto, faster-whisper or openvino ASR backend")
     if not video.is_file():
         raise JellyDubError(f"Input file does not exist: {video}")
     require_ffmpeg()
-    out_dir = config.out_dir if config.out_dir is not None else video.parent
-    report_path = config.cache_dir / "reports" / f"{video.stem}-{cache_key(_fingerprint(video), asdict(config), str(srt))}.json"
-    if report_path.resolve() == video.resolve() or (srt is not None and report_path.resolve() == srt.resolve()):
+    report_path = config.cache_dir / "reports" / f"{video.stem}-{cache_key(_fingerprint(video), asdict(config))}.json"
+    if report_path.resolve() == video.resolve():
         raise JellyDubError(f"Refusing to overwrite source file: {report_path}")
 
     messages = []
@@ -382,27 +387,18 @@ def auto(video: Path, srt: Path | None, config: Config, report: Reporter = print
     source_language = None
     transcribed = False
     try:
-        try:
-            selected, source_language = _resolve_subtitle(video, srt, config, emit)
-        except _NoSubtitleError:
-            emit(f"No usable subtitle found; transcribing ({config.asr_model}, "
-                 f"backend={config.asr_backend}, device={config.asr_device}, beam={config.asr_beam_size})…")
-            if config.pipeline_mode == "overlap":
-                from .progressive import ProgressivePrefetch
-                prefetch = ProgressivePrefetch(config, emit)
-                try:
-                    selected, source_language = _asr_subtitle(video, config, emit, on_region=prefetch.submit)
-                    prefetch.finish()
-                finally:
-                    prefetch.close()
-            else:
-                selected, source_language = _asr_subtitle(video, config, emit)
-            transcribed = True
-        if config.source_lang != "auto":
-            source_language = config.source_lang
-        elif source_language is None:
-            source_language = detect_source_language(selected)[0]
-        run_config = replace(config, source_lang=source_language, mkv=True)
+        input_streams = probe(video).get("streams", [])
+        if not any(stream.get("codec_type") == "video" for stream in input_streams):
+            raise JellyDubError("auto requires a video file with a video stream")
+        if not any(stream.get("codec_type") == "audio" for stream in input_streams):
+            raise JellyDubError("auto requires a video with an audio track")
+        emit(f"Transcribing video ({config.asr_model}, backend={config.asr_backend}, "
+             f"device={config.asr_device}, beam={config.asr_beam_size})…")
+        selected, source_language = _asr_subtitle(video, config, emit)
+        transcribed = True
+        if source_language != "en":
+            raise JellyDubError(f"auto accepts English video only; ASR detected {source_language!r}")
+        run_config = replace(config, source_lang="en", mkv=True)
         warning_handler = _WarningReporter(emit)
         logger = logging.getLogger()
         logger.addHandler(warning_handler)
@@ -443,12 +439,11 @@ def auto(video: Path, srt: Path | None, config: Config, report: Reporter = print
             "quality_status": quality_status,
             "video": str(video),
             "subtitle": str(selected),
-            "subtitle_source": "asr" if transcribed else ("explicit" if srt is not None else "discovered"),
+            "subtitle_source": "asr",
             "asr_execution": json.loads(selected.with_suffix(".json").read_text()).get("execution", {}) if transcribed else None,
-            "subtitle_timing": "asr" if transcribed else (
-                "unverified" if any("unverified" in warning.lower() for warning in warnings) else "subtitle"),
+            "subtitle_timing": "asr",
             "source_language": source_language,
-            "translation": "performed" if source_language == "en" else "not_required",
+            "translation": "performed",
             "semantic_translation_verified": False,
             "subtitle_qc": subtitle_qc,
             "pipeline_warnings": warnings,
@@ -460,7 +455,7 @@ def auto(video: Path, srt: Path | None, config: Config, report: Reporter = print
             "status": "failed",
             "video": str(video),
             "subtitle": str(selected) if selected else None,
-            "subtitle_source": "asr" if transcribed else ("explicit" if srt is not None else "discovered"),
+            "subtitle_source": "asr",
             "source_language": source_language,
             "error": str(exc),
             "pipeline_warnings": _pipeline_warnings(messages, asr=transcribed),

@@ -26,16 +26,18 @@ def test_dub_options(monkeypatch, tmp_path):
     assert config.fallback_voiceover
 
 
-def test_auto_options_and_default_voiceover(monkeypatch, tmp_path):
+def test_auto_video_only_defaults(monkeypatch, tmp_path):
     seen = []
     monkeypatch.setattr('jellydub.pipeline.auto', lambda v, s, c, **kw: seen.append((v, s, c)) or {'report': tmp_path / 'report.json'})
-    result = runner.invoke(app, ['auto', 'movie.mp4', '--srt', 'movie.en.srt',
+    result = runner.invoke(app, ['auto', 'movie.mp4',
                                  '--asr-model', 'base', '--asr-device', 'cpu',
                                  '--out-dir', str(tmp_path)])
     assert result.exit_code == 0, result.output
     _, srt, config = seen[0]
-    assert srt == Path('movie.en.srt')
-    assert config.mix == 'voiceover'
+    assert srt is None
+    assert config.mix == 'dub-only'
+    assert config.source_lang == 'auto' and config.pipeline_mode == 'sequential'
+    assert config.tts_workers == 1
     assert config.mkv and not config.mp4 and not config.audio
     assert config.asr_model == 'base' and config.asr_device == 'cpu'
     assert config.tts == 'vieneu'
@@ -263,3 +265,21 @@ def test_optional_media_exports_require_opt_in(monkeypatch, command):
     result = runner.invoke(app, [command, 'video.mp4', '--mp4', '--audio'])
     assert result.exit_code == 0, result.output
     assert seen[0].mp4 and seen[0].audio
+
+
+@pytest.mark.parametrize('option,value', [('--srt', 'movie.vi.srt'), ('--source-lang', 'vi'),
+                                          ('--mix', 'replace'), ('--pipeline-mode', 'overlap')])
+def test_auto_rejects_removed_workflow_options(option, value):
+    result = runner.invoke(app, ['auto', 'movie.mp4', option, value])
+    assert result.exit_code != 0 and 'No such option' in result.output
+
+
+def test_auto_config_cannot_enable_complex_workflow(monkeypatch, tmp_path):
+    path = tmp_path / 'settings.toml'
+    path.write_text('[jellydub]\nsource_lang="vi"\nmix="replace"\npipeline_mode="overlap"\n')
+    seen = []
+    monkeypatch.setattr('jellydub.pipeline.auto', lambda v, s, c, **kw: seen.append(c) or {})
+    result = runner.invoke(app, ['auto', 'movie.mp4', '--config', str(path)])
+    assert result.exit_code == 0, result.output
+    assert seen[0].mix == 'dub-only' and seen[0].pipeline_mode == 'sequential'
+    assert seen[0].source_lang == 'auto'

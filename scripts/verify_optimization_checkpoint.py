@@ -39,11 +39,11 @@ for i in ((1,2,3) if sys.argv[1].startswith("cp2") else (1,2)):
  if i==3:config.out_dir=base/"output-moved"
  counts.clear();cpu=resource.getrusage(resource.RUSAGE_CHILDREN);prior=cpu.ru_utime+cpu.ru_stime;start=time.perf_counter()
  with (base/f'run-{i}.log').open('w') as log:
-  outputs=p.auto(video,srt,config,report=lambda message:(log.write(message+'\n'),log.flush()))
+  outputs=p.dub(video,srt,config,report=lambda message:(log.write(message+'\n'),log.flush()))
  cpu=resource.getrusage(resource.RUSAGE_CHILDREN)
  report['runs'].append({'run':i,'wall_seconds':time.perf_counter()-start,'child_cpu_seconds':cpu.ru_utime+cpu.ru_stime-prior,'commands':dict(counts)})
  (base/'verification.json').write_text(json.dumps(report,indent=2));print(report['runs'][-1],flush=True)
-report['checks']={'output_only_mkv_srt':{path.suffix for path in config.out_dir.iterdir()}=={'.mkv','.srt'},'report_internal':outputs['report'].is_relative_to(config.cache_dir),'source_unchanged':all(fingerprint(Path(path))==value for path,value in before.items()),'no_mp3_intermediate':not list(work.glob('*.mp3'))}
+report['checks']={'output_only_mkv_srt':{path.suffix for path in config.out_dir.iterdir()}=={'.mkv','.srt'},'source_unchanged':all(fingerprint(Path(path))==value for path,value in before.items()),'no_mp3_intermediate':not list(work.glob('*.mp3'))}
 for path in (video,outputs['mkv']):
  value=subprocess.check_output(['ffmpeg','-v','error','-i',str(path),'-map','0:v:0','-c','copy','-f','hash','-hash','sha256','-'],text=True).strip()
  report.setdefault('video_hashes',[]).append(value)

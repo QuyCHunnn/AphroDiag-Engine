@@ -1,4 +1,4 @@
-"""Measured 180-second auto pipeline benchmark, fresh job cache then warm replay."""
+"""Measured 180-second explicit-SRT dub benchmark, fresh job cache then warm replay."""
 from pathlib import Path
 import functools, hashlib, json, subprocess, time
 from jellydub import pipeline
@@ -36,7 +36,7 @@ srt=base/'input'/'sample.en.srt';write_srt(cues,srt)
 original_hash=hashlib.sha256(video.read_bytes()).hexdigest()
 records=[]
 for case in ('cold','warm'):
- args=[str(root/'.venv/bin/python'),str(Path(__file__).resolve()),'worker',case,'auto',str(video),'--srt',str(srt),'--config',str(config),'--cache-dir',str(base/'cache'),'--out-dir',str(base/'output')]
+ args=[str(root/'.venv/bin/python'),str(Path(__file__).resolve()),'worker',case,'dub',str(video),'--srt',str(srt),'--config',str(config),'--cache-dir',str(base/'cache'),'--out-dir',str(base/'output')]
  start=time.perf_counter()
  with (base/(case+'.log')).open('w') as log:r=subprocess.run(args,stdout=log,stderr=subprocess.STDOUT,timeout=2400)
  record={'case':case,'returncode':r.returncode,'wall_seconds':time.perf_counter()-start,'source_unchanged':hashlib.sha256(video.read_bytes()).hexdigest()==original_hash,'stages':json.loads((base/(case+'-stages.json')).read_text()) if (base/(case+'-stages.json')).exists() else []}

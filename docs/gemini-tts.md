@@ -12,6 +12,8 @@ unset GEMINI_API_KEY
 
 The key is read from `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) at request time. It is never a configuration field or cache identifier. CLI overrides include `--tts gemini`, `--tts-model`, `--tts-style`, and `--voice`; the same configuration works with `preview`, `dub`, `auto`, `serve`, and `stream`.
 
+For the simplified `auto` workflow, mixing is always `dub-only`, processing is sequential, and TTS uses one worker unless `--tts-workers` is supplied. These workflow settings override the corresponding profile values. No preview is required.
+
 The supplied profile selects `gemini-3.8-flash-lite-tts`, Charon, two concurrent requests, voiceover mixing, and MKV/SRT output. Translation remains OPUS; ASR remains local. To preserve a machine-specific GPU ASR setup, add these TTS options to that setup or pass its ASR options explicitly. Cloud speech speed depends on API latency and quota, rather than the local GPU.
 
 Optional manual character mapping:

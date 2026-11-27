@@ -4,16 +4,16 @@ Example: .venv/bin/python scripts/trace_pipeline_job.py --run baseline1 --clip t
 import argparse,json,os,subprocess,threading,time,sys,signal
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
-p=argparse.ArgumentParser();p.add_argument('--run',required=True);p.add_argument('--clip',required=True);p.add_argument('--mode',choices=['sequential','overlap'],default='overlap');args=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--run',required=True);p.add_argument('--clip',required=True);args=p.parse_args()
 manifest=json.loads((root/'artifacts/next-optimization/corpus/manifest.json').read_text())
 clip=next(c for c in manifest['clips'] if c['id']==args.clip)
 work=root/'artifacts/next-optimization/baselines'/args.run
 if work.exists():raise SystemExit('Run directory already exists; preserve measurements')
 work.mkdir(parents=True)
 model=(root/'artifacts/igpu-setup/whisper-small-model-path.txt').read_text().strip()
-command=[str(root/'.venv/bin/jellydub'),'auto',clip['clip'],'--source-lang','en','--asr-backend','genai','--asr-python',str(root/'.venv-native-asr-next/bin/python'),'--asr-model',model,'--asr-device','gpu','--tts','vieneu','--tts-device','cpu','--translate-device','cpu','--tts-precision','int8','--pipeline-mode',args.mode,'--cache-dir',str(work/'cache'),'--out-dir',str(work/'output')]
-# Explicit config prevents online subtitle search, preserves native beam=5.
-config=work/'config.toml';config.write_text('[jellydub]\ndownload=false\nmax_tempo=1.6\nmix="voiceover"\n')
+command=[str(root/'.venv/bin/jellydub'),'auto',clip['clip'],'--asr-backend','openvino','--asr-model',model,'--asr-device','gpu','--tts','vieneu','--tts-device','cpu','--translate-device','cpu','--tts-precision','fp32','--cache-dir',str(work/'cache'),'--out-dir',str(work/'output')]
+# Stable video-only pipeline; auto disables subtitle search and uses beam=5.
+config=work/'config.toml';config.write_text('[jellydub]\ndownload=false\nmax_tempo=1.6\nmix="dub-only"\n')
 command+=['--config',str(config)]
 started=time.perf_counter();events=[];samples=[];sample_errors=[];pipeline_error=None;code=1;stop=threading.Event()
 (work/'report.json').write_text(json.dumps({'status':'running','command':command}))

@@ -1,5 +1,7 @@
 # Handover: tự động thuyết minh và phụ đề tiếng Việt
 
+> Tài liệu lịch sử trước khi tinh gọn quy trình. `auto` hiện chỉ nhận video tiếng Anh, tự chép lời, dùng `dub-only` và chạy tuần tự; không nhận `--srt`, `--source-lang`, `--mix`, `--pipeline-mode`. Dùng [hướng dẫn CLI hiện tại](cli-guide.md) để vận hành.
+
 ## Mục tiêu
 
 Từ một video, tự tìm phụ đề phù hợp hoặc nhận dạng lời nói nếu không có phụ đề; dịch tiếng Anh sang tiếng Việt khi cần; tạo thuyết minh; xuất video có phụ đề và báo cáo QC. File nguồn được giữ nguyên. Kết quả video có thể mở bằng trình phát thông thường, không cần Jellyfin hay server JellyDub.

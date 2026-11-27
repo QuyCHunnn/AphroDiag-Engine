@@ -107,7 +107,7 @@ def transcribe_video(video: Path, *, model_name: str, device: str, cache_dir: Pa
     if not cues and detected == "und":
         raise JellyDubError("ASR did not detect any speech in the video")
     if detected not in {"en", "vi"}:
-        raise JellyDubError(f"ASR detected unsupported language {detected!r}; JellyDub auto supports English and Vietnamese")
+        raise JellyDubError(f"ASR detected unsupported language {detected!r}; the ASR adapter supports English and Vietnamese")
     if not cues:
         raise JellyDubError("ASR did not detect any speech in the video")
     return cues, detected
