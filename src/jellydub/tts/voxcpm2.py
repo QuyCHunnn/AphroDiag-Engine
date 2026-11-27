@@ -28,7 +28,7 @@ class VoxCPM2TTS(TTSProvider):
         self.speaker_refs = {k: Path(v).expanduser() for k, v in (speaker_refs or {}).items()}
         executable = binary or shutil.which("voxcpm2-cli")
         if not executable or not Path(executable).expanduser().is_file():
-            raise TTSError("Set voxcpm2_binary to a built voxcpm2-cli executable (see docs/voxcpm2.md)")
+            raise TTSError("Set voxcpm2_binary to a built voxcpm2-cli executable")
         self.binary = Path(executable).expanduser().resolve()
         if not os.access(self.binary, os.X_OK):
             raise TTSError(f"VoxCPM2 executable is not executable: {self.binary}")

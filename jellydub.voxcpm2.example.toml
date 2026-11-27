@@ -1,0 +1,15 @@
+# Build voxcpm2-cli and download the VoxCPM2 GGUF models before using this profile.
+# Copy to tts.voxcpm2.toml and adjust paths for your machine.
+[jellydub]
+tts = "voxcpm2"
+tts_model = "models/voxcpm2"
+voxcpm2_binary = "runtime/voxcpm2-build/bin/voxcpm2-cli"
+voxcpm2_timeout = 600
+tts_device = "gpu"
+tts_style = "Speak Vietnamese naturally with expressive phrasing."
+tts_workers = 1
+mix = "dub-only"
+cache_dir = ".jellydub-cache-voxcpm2"
+out_dir = "output"
+# Optional readable reference clip, 3–8 seconds:
+# reference = ["refs/voice.wav"]

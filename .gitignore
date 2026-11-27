@@ -23,3 +23,28 @@ tests/e2e/_out/
 /.jellydub-cache*/
 /.env
 /.env.*
+
+# Local tool state and generated outputs
+/.playwright-mcp/
+/.agents/
+/.codex/
+/.aws/
+/output/
+/preview/
+/nghe-thu/
+/models/
+/runtime/
+/refs/
+/build/
+/tts.voxcpm2.toml
+/jellydub.voxcpm2.toml
+.DS_Store
+
+# Documentation is excluded; other local scripts stay off Git.
+/docs/
+
+/scripts/*
+!/scripts/check_gemini_tts_access.py
+!/scripts/setup_engine.py
+!/scripts/summarize_pipeline_trace.py
+!/scripts/trace_pipeline_job.py

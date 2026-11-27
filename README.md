@@ -59,10 +59,12 @@ Lần đầu cần mạng để tải thư viện/model. Các lần sau có th�
 
 ## Khi cần thêm
 
-- [Hướng dẫn CLI](docs/cli-guide.md): thiết bị, cache, xuất thêm MP4/MP3 và chọn bộ tạo giọng.
-- Các lệnh kỹ thuật `translate`, `dub`, `preview` vẫn dành cho xử lý riêng; không thuộc quy trình `auto`. `auto` không nhận `--srt`, `--source-lang`, `--mix` hoặc `--pipeline-mode`.
-- [Gemini TTS](docs/gemini-tts.md), [VoxCPM2](docs/voxcpm2.md), [chỉ dẫn cách đọc](docs/expressive-speech.md): cấu hình nâng cao.
-- [Live API](docs/live-dubbing-vi.md): tích hợp ứng dụng/Jellyfin. HLS còn thử nghiệm; Live/HLS chưa có xác thực.
-- Phát triển: `uv sync --group dev`, sau đó `uv run pytest -q`. Cấu hình đầy đủ ở [jellydub.example.toml](jellydub.example.toml).
+Xem tùy chọn CLI bằng `uv run --no-sync jellydub --help` hoặc `uv run --no-sync jellydub auto --help`.
+
+Các lệnh kỹ thuật `translate`, `dub`, `preview` dành cho xử lý riêng; không thuộc quy trình `auto`. `auto` không nhận `--srt`, `--source-lang`, `--mix` hoặc `--pipeline-mode`.
+
+Cấu hình đầy đủ ở [jellydub.example.toml](jellydub.example.toml). Gemini dùng [jellydub.gemini.toml](jellydub.gemini.toml); VoxCPM2 dùng [jellydub.voxcpm2.example.toml](jellydub.voxcpm2.example.toml) sau khi chuẩn bị runtime/model. HLS còn thử nghiệm; Live/HLS chưa có xác thực.
+
+Phát triển: `uv sync --group dev`, sau đó `uv run pytest -q`.
 
 **Giấy phép:** mã nguồn MIT; thư viện, model và dịch vụ có điều khoản riêng. Xem [ghi chú bên thứ ba](LICENSES-THIRD-PARTY.md).
